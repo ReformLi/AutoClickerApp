@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootLayout"
+    android:layout_width="120dp"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@android:color/transparent"
+    android:padding="8dp">
+
+    <!-- 主悬浮窗按钮（放在顶部） -->
+    <ImageView
+        android:id="@+id/btnMain"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_gravity="center"
+        android:src="@drawable/ic_main"
+        android:contentDescription="主按钮"
+        android:background="#448AFF"
+        android:padding="8dp" />
+
+    <!-- 展开的按钮区域（放在主按钮下方） -->
+    <LinearLayout
+        android:id="@+id/expandedControls"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <!-- 启动/停止按钮 -->
+        <ImageView
+            android:id="@+id/btnStart"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_play"
+            android:contentDescription="启动"
+            android:background="#448AFF"
+            android:padding="6dp"
+            android:layout_marginTop="4dp" />
+
+        <!-- 添加按钮 -->
+        <ImageView
+            android:id="@+id/btnAdd"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_add"
+            android:contentDescription="添加"
+            android:background="#448AFF"
+            android:padding="6dp"
+            android:layout_marginTop="4dp" />
+
+        <!-- 滑动按钮 -->
+        <ImageView
+            android:id="@+id/btnSlide"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_slide"
+            android:contentDescription="滑动"
+            android:background="#448AFF"
+            android:padding="6dp"
+            android:layout_marginTop="4dp" />
+
+        <!-- 减少按钮 -->
+        <ImageView
+            android:id="@+id/btnReduce"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_remove"
+            android:contentDescription="减少"
+            android:background="#448AFF"
+            android:padding="6dp"
+            android:layout_marginTop="4dp" />
+
+        <!-- 设置按钮 -->
+        <ImageView
+            android:id="@+id/btnSettings"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_settings"
+            android:contentDescription="设置"
+            android:background="#448AFF"
+            android:padding="6dp"
+            android:layout_marginTop="4dp" />
+
+        <!-- 隐藏按钮 -->
+        <ImageView
+            android:id="@+id/btnHide"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_hide"
+            android:contentDescription="隐藏"
+            android:background="#448AFF"
+            android:padding="6dp"
+            android:layout_marginTop="4dp" />
+
+        <!-- 退出按钮 -->
+        <ImageView
+            android:id="@+id/btnExit"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_exit"
+            android:contentDescription="退出"
+            android:background="#448AFF"
+            android:padding="6dp"
+            android:layout_marginTop="4dp" />
+
+    </LinearLayout>
+
+</LinearLayout>

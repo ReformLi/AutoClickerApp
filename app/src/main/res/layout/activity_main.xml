@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <!-- 标题提示 -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="悬浮窗演示"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="32dp" />
+
+    <!-- 获取权限按钮（默认红色） -->
+    <Button
+        android:id="@+id/btnRequestPermission"
+        android:layout_width="200dp"
+        android:layout_height="48dp"
+        android:text="获取权限"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#F44336"
+        android:layout_marginBottom="16dp" />
+
+    <!-- 检查权限按钮 -->
+    <Button
+        android:id="@+id/btnCheckPermission"
+        android:layout_width="200dp"
+        android:layout_height="48dp"
+        android:text="检查权限"
+        android:layout_marginBottom="16dp" />
+
+    <!-- 启动/关闭按钮 -->
+    <Button
+        android:id="@+id/btnToggleService"
+        android:layout_width="200dp"
+        android:layout_height="48dp"
+        android:text="启动悬浮窗"
+        android:enabled="false"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#9E9E9E" />
+
+    <!-- 状态提示文本 -->
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="14sp"
+        android:layout_marginTop="16dp"
+        android:textColor="#000000" />
+
+</LinearLayout>

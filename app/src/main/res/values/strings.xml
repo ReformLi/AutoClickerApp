@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">连点器</string>
+    <string name="accessibility_service_label">自动点击器服务</string>
+    <string name="accessibility_service_description">提供自动点击功能，用于快速连续点击屏幕指定位置</string>
+    <string name="floating_window_title">连点器</string>
+    <string name="start_clicking">开始连点</string>
+    <string name="stop_clicking">停止连点</string>
+    <string name="click_speed">点击速度</string>
+    <string name="clicks_per_second">每秒点击次数</string>
+    <string name="settings">设置</string>
+    <string name="enable_accessibility">请启用无障碍服务</string>
+    <string name="grant_overlay_permission">请授予悬浮窗权限</string>
+    <!-- 其他字符串 -->
+<!--    <string name="accessibility_service_description">用于实现自动连点功能，帮助用户执行重复点击操作</string>-->
+</resources>
