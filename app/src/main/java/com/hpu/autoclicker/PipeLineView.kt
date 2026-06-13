@@ -7,10 +7,14 @@ import android.graphics.Paint
 import android.view.View
 
 class PipeLineView(context: Context) : View(context) {
+    companion object {
+        const val STROKE_WIDTH = 30f
+    }
+
     // 固定宽度的半透明淡蓝色画笔
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#6600BCD4")  // 淡蓝半透明
-        strokeWidth = 30f                      // 固定宽度（px），可按需改为 dp
+        strokeWidth = STROKE_WIDTH             // 固定宽度（px），可按需改为 dp
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.BUTT
     }

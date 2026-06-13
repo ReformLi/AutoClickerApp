@@ -621,8 +621,8 @@ class FloatingWindowService : Service() {
         val endCx = endPoint.x + endPoint.view.width / 2f
         val endCy = endPoint.y + endPoint.view.height / 2f
 
-        // 线与画笔宽度相关
-        val lineWidth = 12f   // 必须与 PipeLineView 中的 strokeWidth 一致
+        // 线与画笔宽度相关，必须与 PipeLineView 中的 strokeWidth 一致
+        val lineWidth = PipeLineView.STROKE_WIDTH
         val halfWidth = lineWidth / 2f
 
         // 计算窗口最小矩形（包含直线和线宽）
@@ -662,7 +662,9 @@ class FloatingWindowService : Service() {
             },
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    // 管道仅作视觉提示，不能拦截真实触摸或无障碍滑动路径
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.START or Gravity.TOP
@@ -748,6 +750,80 @@ class FloatingWindowService : Service() {
             layoutParams = ViewGroup.LayoutParams(sizePx, sizePx)
         }
     }
+
+    private fun getPointWidth(point: ClickPoint): Int {
+        return when {
+            point.view.width > 0 -> point.view.width
+            point.params?.width ?: 0 > 0 -> point.params!!.width
+            point.view.layoutParams?.width ?: 0 > 0 -> point.view.layoutParams.width
+            else -> (35 * resources.displayMetrics.density).toInt()
+        }
+    }
+
+    private fun getPointHeight(point: ClickPoint): Int {
+        return when {
+            point.view.height > 0 -> point.view.height
+            point.params?.height ?: 0 > 0 -> point.params!!.height
+            point.view.layoutParams?.height ?: 0 > 0 -> point.view.layoutParams.height
+            else -> (35 * resources.displayMetrics.density).toInt()
+        }
+    }
+
+    private fun getPointCenterX(point: ClickPoint): Float {
+        return point.x + getPointWidth(point) / 2f
+    }
+
+    private fun getPointCenterY(point: ClickPoint): Float {
+        return point.y + getPointHeight(point) / 2f
+    }
+
+    private fun waitForClickPointWindowsReady(onReady: () -> Unit, retryCount: Int = 0) {
+        val allReady = clickPoints.all { point ->
+            point.view.width > 0 && point.view.height > 0 && point.view.isAttachedToWindow
+        }
+        if (allReady || retryCount >= 5) {
+            onReady()
+            return
+        }
+        runHandler.postDelayed({
+            waitForClickPointWindowsReady(onReady, retryCount + 1)
+        }, 80)
+    }
+
+    private fun performPointClick(
+        service: AutoClickerAccessibilityService,
+        point: ClickPoint,
+        x: Float,
+        y: Float,
+        duration: Long,
+        onFinished: () -> Unit
+    ) {
+        val clickDuration = duration.coerceAtLeast(50L)
+
+        // 首次创建悬浮窗后，点击点窗口可能仍短暂参与命中测试。
+        // 点击前隐藏当前点并再次刷新不可触摸标记，避免首个坐标手势落到悬浮点自身。
+        point.view.visibility = View.INVISIBLE
+        point.params?.let { params ->
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            windowManager.updateViewLayout(point.view, params)
+        }
+
+        runHandler.postDelayed({
+            if (!isRunning) {
+                point.view.visibility = View.VISIBLE
+                onFinished()
+                return@postDelayed
+            }
+
+            service.performClick(x, y, clickDuration)
+
+            runHandler.postDelayed({
+                point.view.visibility = if (isHidden) View.GONE else View.VISIBLE
+                onFinished()
+            }, clickDuration + 80)
+        }, 80)
+    }
+
     private fun startRunning() {
         val service = AutoClickerAccessibilityService.instance
         if (service == null) {
@@ -800,6 +876,14 @@ class FloatingWindowService : Service() {
             }
         }
 
+        // 管道也必须穿透，否则滑动路径容易被悬浮管道窗口拦截
+        for ((_, pipePair) in pipeMap) {
+            val (lineView, params) = pipePair
+            lineView.alpha = 0.3f
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            windowManager.updateViewLayout(lineView, params)
+        }
+
         // 按编号排序执行
         val sortedPoints = clickPoints.sortedBy { it.id }
         var loopDone = 0   // 已经完成的轮数
@@ -815,8 +899,8 @@ class FloatingWindowService : Service() {
                 return
             }
             val point = sortedPoints[currentIndex]
-            val centerX = point.x + point.view.width / 2f
-            val centerY = point.y + point.view.height / 2f
+            val centerX = getPointCenterX(point)
+            val centerY = getPointCenterY(point)
 
             // 随机偏移（如果设置了随机距离）
             val randomX = if (point.randomDistance > 0) {
@@ -842,11 +926,12 @@ class FloatingWindowService : Service() {
                             return
                         }
                         Log.d("ClickDebug", "点击: x=$targetX, y=$targetY, duration=${point.touchDuration}, service=${service != null}")
-                        service.performClick(targetX, targetY, point.touchDuration)
-                        remaining--
-                        runHandler.postDelayed({
-                            doAction()
-                        }, point.touchDuration + 50)
+                        performPointClick(service, point, targetX, targetY, point.touchDuration) {
+                            remaining--
+                            runHandler.postDelayed({
+                                doAction()
+                            }, 50)
+                        }
                     }
                     doAction()
                 }
@@ -855,10 +940,10 @@ class FloatingWindowService : Service() {
                     if (endPoint != null) {
                         val startView = point.view
                         val endView = endPoint.view
-                        val startCx = point.x + startView.width / 2f
-                        val startCy = point.y + startView.height / 2f
-                        val endCx = endPoint.x + endView.width / 2f
-                        val endCy = endPoint.y + endView.height / 2f
+                        val startCx = getPointCenterX(point)
+                        val startCy = getPointCenterY(point)
+                        val endCx = getPointCenterX(endPoint)
+                        val endCy = getPointCenterY(endPoint)
 
                         var remaining = point.repeatCount
                         fun doSwipe() {
@@ -867,9 +952,10 @@ class FloatingWindowService : Service() {
                                 return
                             }
 
-                            // 隐藏起点终点视图，避免遮挡
+                            // 隐藏起点、终点和管道，避免悬浮窗遮挡滑动路径
                             startView.visibility = View.INVISIBLE
                             endView.visibility = View.INVISIBLE
+                            pipeMap[point.pairId]?.first?.visibility = View.INVISIBLE
 
                             runHandler.postDelayed({
                                 // 调用优化后的 performSwipe
@@ -877,8 +963,9 @@ class FloatingWindowService : Service() {
 
                                 // 手势执行后恢复视图
                                 runHandler.postDelayed({
-                                    startView.visibility = View.VISIBLE
-                                    endView.visibility = View.VISIBLE
+                                    startView.visibility = if (isHidden) View.GONE else View.VISIBLE
+                                    endView.visibility = if (isHidden) View.GONE else View.VISIBLE
+                                    pipeMap[point.pairId]?.first?.visibility = if (isHidden) View.GONE else View.VISIBLE
                                 }, maxOf(point.touchDuration, 200))   // 等待手势完成
 
                                 remaining--
@@ -902,12 +989,22 @@ class FloatingWindowService : Service() {
                             return
                         }
                         // 双击：两个快速点击
-                        service.performClick(targetX, targetY, 50)
+                        point.view.visibility = View.INVISIBLE
+                        point.params?.let { params ->
+                            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                            windowManager.updateViewLayout(point.view, params)
+                        }
                         runHandler.postDelayed({
                             service.performClick(targetX, targetY, 50)
-                            remaining--
-                            runHandler.postDelayed({ doDouble() }, point.touchDuration + 50)
-                        }, 100)  // 双击间隔100ms
+                            runHandler.postDelayed({
+                                service.performClick(targetX, targetY, 50)
+                                remaining--
+                                runHandler.postDelayed({
+                                    point.view.visibility = if (isHidden) View.GONE else View.VISIBLE
+                                    doDouble()
+                                }, point.touchDuration + 50)
+                            }, 100)  // 双击间隔100ms
+                        }, 80)
                     }
                     doDouble()
                 }
@@ -930,7 +1027,15 @@ class FloatingWindowService : Service() {
                 }
             }
         }
-        performRound(0)
+        // 首次启动悬浮窗后，点击点窗口需要完成 attach/layout 和触摸穿透刷新。
+        // 等待窗口就绪后再开始，避免首次自动点击落到刚创建的悬浮点窗口上。
+        waitForClickPointWindowsReady({
+            runHandler.postDelayed({
+                if (isRunning) {
+                    performRound(0)
+                }
+            }, 250)
+        })
     }
 
     private fun stopRunning() {
@@ -952,10 +1057,20 @@ class FloatingWindowService : Service() {
         // 恢复所有点击点视图
         for (point in clickPoints) {
             point.view.alpha = 1.0f                     // 恢复完全不透明
+            point.view.visibility = if (isHidden) View.GONE else View.VISIBLE
             point.params?.let { params ->
                 params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
                 windowManager.updateViewLayout(point.view, params)
             }
+        }
+
+        // 恢复管道显示效果，但保持不可触摸，符合“仅作视觉提示”的需求
+        for ((_, pipePair) in pipeMap) {
+            val (lineView, params) = pipePair
+            lineView.alpha = 1.0f
+            lineView.visibility = if (isHidden) View.GONE else View.VISIBLE
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            windowManager.updateViewLayout(lineView, params)
         }
 
         rootView.findViewById<ImageView>(R.id.btnStart).setImageResource(R.drawable.ic_play)
@@ -1274,7 +1389,9 @@ class FloatingWindowService : Service() {
                             },
                             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                                    // 管道仅作视觉提示，不能拦截真实触摸或无障碍滑动路径
+                                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
                             PixelFormat.TRANSLUCENT
                         ).apply {
                             gravity = Gravity.START or Gravity.TOP

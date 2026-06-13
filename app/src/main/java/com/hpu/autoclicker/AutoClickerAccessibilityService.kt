@@ -119,25 +119,42 @@ class AutoClickerAccessibilityService : AccessibilityService() {
     }
     fun performClick(x: Float, y: Float, duration: Long = 300) {
         Log.d("点击位置", ""+x+" "+y)
-        // 优先尝试控件点击（兼容性最好）
-        val node = findClickableNodeAt(x, y)
-        if (node != null) {
-            Log.d("控件点击", "111111")
-            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            node.recycle()
-            return
-        }
-        Log.d("控件点击", "222222")
-        // 如果找不到控件，回退到手势点击
+        val clickDuration = duration.coerceAtLeast(50L)
+
+        // 坐标连点应优先使用无障碍手势，确保点击发生在用户设置的精确坐标。
+        // ACTION_CLICK 依赖节点树，可能点到父容器或过期节点，表现为偶发第一次点击无效。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             val path = Path().apply {
                 moveTo(x, y)
                 lineTo(x + 0.5f, y)   // 极小移动，避免被误判为滑动
             }
             val gesture = GestureDescription.Builder()
-                .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
+                .addStroke(GestureDescription.StrokeDescription(path, 0, clickDuration))
                 .build()
-            dispatchGesture(gesture, null, null)
+            val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+                override fun onCompleted(desc: GestureDescription?) {
+                    Log.d("ClickDebug", "手势点击成功: x=$x, y=$y")
+                }
+
+                override fun onCancelled(desc: GestureDescription?) {
+                    Log.e("ClickDebug", "手势点击被取消: x=$x, y=$y")
+                }
+            }, null)
+
+            if (dispatched) {
+                return
+            }
+
+            Log.e("ClickDebug", "dispatchGesture 返回 false，尝试回退控件点击")
+        }
+
+        val node = findClickableNodeAt(x, y)
+        if (node != null) {
+            val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            Log.d("ClickDebug", "控件点击回退结果: $clicked")
+            node.recycle()
+        } else {
+            Log.w("ClickDebug", "未找到可点击控件，点击失败: x=$x, y=$y")
         }
     }
 
@@ -166,7 +183,10 @@ class AutoClickerAccessibilityService : AccessibilityService() {
     }
 
     fun performSwipe(startX: Float, startY: Float, endX: Float, endY: Float, duration: Long = 500) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            Log.w("SwipeDebug", "当前系统版本不支持无障碍手势滑动")
+            return
+        }
 
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val display = windowManager.defaultDisplay
@@ -175,13 +195,13 @@ class AutoClickerAccessibilityService : AccessibilityService() {
 
         val screenWidth = realSize.x
         val screenHeight = realSize.y
-        val safeMargin = 50 // 避开系统手势边缘
+        val safeMargin = 1f // 只做屏幕边界保护，避免明显改变用户设置的滑动坐标
 
         // 1. 约束坐标在屏幕内
-        val safeStartX = startX.coerceIn(0f, screenWidth.toFloat())
-        val safeStartY = startY.coerceIn(0f, screenHeight.toFloat())
-        val safeEndX = endX.coerceIn(0f, screenWidth.toFloat())
-        val safeEndY = endY.coerceIn(0f, screenHeight.toFloat())
+        val safeStartX = startX.coerceIn(safeMargin, screenWidth - safeMargin)
+        val safeStartY = startY.coerceIn(safeMargin, screenHeight - safeMargin)
+        val safeEndX = endX.coerceIn(safeMargin, screenWidth - safeMargin)
+        val safeEndY = endY.coerceIn(safeMargin, screenHeight - safeMargin)
 
         // 2. 检查最小滑动距离
         val minSwipeLength = 100f
@@ -192,30 +212,30 @@ class AutoClickerAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 3. 避开系统手势敏感边缘
-        val adjustedStartX = safeStartX.coerceIn(safeMargin.toFloat(), screenWidth - safeMargin.toFloat())
-        val adjustedStartY = safeStartY.coerceIn(safeMargin.toFloat(), screenHeight - safeMargin.toFloat())
-        val adjustedEndX = safeEndX.coerceIn(safeMargin.toFloat(), screenWidth - safeMargin.toFloat())
-        val adjustedEndY = safeEndY.coerceIn(safeMargin.toFloat(), screenHeight - safeMargin.toFloat())
+        val swipeDuration = duration.coerceAtLeast(200L)
 
-        Log.d("SwipeDebug", "执行滑动: ($adjustedStartX,$adjustedStartY) → ($adjustedEndX,$adjustedEndY)")
+        Log.d("SwipeDebug", "执行滑动: ($safeStartX,$safeStartY) → ($safeEndX,$safeEndY), duration=$swipeDuration")
 
         val path = Path().apply {
-            moveTo(adjustedStartX, adjustedStartY)
-            lineTo(adjustedEndX, adjustedEndY)
+            moveTo(safeStartX, safeStartY)
+            lineTo(safeEndX, safeEndY)
         }
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
+            .addStroke(GestureDescription.StrokeDescription(path, 0, swipeDuration))
             .build()
 
-        dispatchGesture(gesture, object : GestureResultCallback() {
+        val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(desc: GestureDescription?) {
                 Log.d("SwipeDebug", "滑动成功")
             }
             override fun onCancelled(desc: GestureDescription?) {
-                Log.e("SwipeDebug", "滑动被系统拦截！请确保路径避开屏幕边缘")
+                Log.e("SwipeDebug", "滑动被系统取消，可能被系统手势区域、权限状态或目标应用拦截")
             }
         }, null)
+
+        if (!dispatched) {
+            Log.e("SwipeDebug", "dispatchGesture 返回 false，滑动手势未提交")
+        }
     }
 
     /**
