@@ -220,6 +220,17 @@ class FloatingWindowService : Service() {
             // 如果是滑动对，更新管道
             updatePipeLine(point.pairId)
         }
+
+        // 管道使用全屏透明绘制层，屏幕尺寸变化时只需要更新绘制层尺寸
+        for ((pairId, pipePair) in pipeMap) {
+            val (lineView, params) = pipePair
+            params.x = 0
+            params.y = 0
+            params.width = newW
+            params.height = newH
+            windowManager.updateViewLayout(lineView, params)
+            updatePipeLine(pairId)
+        }
     }
 
     override fun onDestroy() {
@@ -456,7 +467,7 @@ class FloatingWindowService : Service() {
             }
         }
         // 创建带编号的圆形按钮
-        val pointView = createCircleButton(label) // 文字显示 label
+        val pointView = createCircleButton(label, pairId, isStart) // 文字显示 label
 
         val initX = xAxis - pointView.layoutParams.width / 2
         val initY = yAxis - pointView.layoutParams.height / 2
@@ -613,48 +624,22 @@ class FloatingWindowService : Service() {
         if (pairId == -1) return
         val startPoint = clickPoints.find { it.pairId == pairId && it.isStart } ?: return
         val endPoint = clickPoints.find { it.pairId == pairId && !it.isStart } ?: return
-        val (lineView, lineParams) = pipeMap[pairId] ?: return
+        val (lineView, _) = pipeMap[pairId] ?: return
 
         // 两个圆形节点的中心坐标
-        val startCx = startPoint.x + startPoint.view.width / 2f
-        val startCy = startPoint.y + startPoint.view.height / 2f
-        val endCx = endPoint.x + endPoint.view.width / 2f
-        val endCy = endPoint.y + endPoint.view.height / 2f
+        lineView.startX = getPointCenterX(startPoint)
+        lineView.startY = getPointCenterY(startPoint)
+        lineView.endX = getPointCenterX(endPoint)
+        lineView.endY = getPointCenterY(endPoint)
 
-        // 线与画笔宽度相关，必须与 PipeLineView 中的 strokeWidth 一致
-        val lineWidth = PipeLineView.STROKE_WIDTH
-        val halfWidth = lineWidth / 2f
-
-        // 计算窗口最小矩形（包含直线和线宽）
-        val minX = Math.min(startCx, endCx) - halfWidth
-        val minY = Math.min(startCy, endCy) - halfWidth
-        val maxX = Math.max(startCx, endCx) + halfWidth
-        val maxY = Math.max(startCy, endCy) + halfWidth
-
-        // 更新窗口位置和尺寸
-        lineParams.x = minX.toInt()
-        lineParams.y = minY.toInt()
-        lineParams.width = Math.ceil((maxX - minX).toDouble()).toInt().coerceAtLeast(1)
-        lineParams.height = Math.ceil((maxY - minY).toDouble()).toInt().coerceAtLeast(1)
-
-        // 更新直线相对于窗口的坐标
-        lineView.startX = startCx - minX
-        lineView.startY = startCy - minY
-        lineView.endX = endCx - minX
-        lineView.endY = endCy - minY
-
-        // 应用更改
-        windowManager.updateViewLayout(lineView, lineParams)
+        // 管道窗口固定为全屏透明层，拖动时只重绘坐标，不调整窗口尺寸，减少延迟
         lineView.invalidate()
     }
-    private fun addSwipePair() {
-        pairCount = pointCount + 1
-        val pairId = pairCount
 
-        // 1. 创建管道视图和参数
-        val lineView = PipeLineView(this)
-        val lineParams = WindowManager.LayoutParams(
-            100, 100, // 临时尺寸，稍后更新
+    private fun createPipeLineLayoutParams(): WindowManager.LayoutParams {
+        return WindowManager.LayoutParams(
+            getScreenWidth(),
+            getScreenHeight(),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             } else {
@@ -671,6 +656,15 @@ class FloatingWindowService : Service() {
             x = 0
             y = 0
         }
+    }
+
+    private fun addSwipePair() {
+        pairCount = pointCount + 1
+        val pairId = pairCount
+
+        // 1. 创建管道视图和参数
+        val lineView = PipeLineView(this)
+        val lineParams = createPipeLineLayoutParams()
         // 存入 map
         pipeMap[pairId] = Pair(lineView, lineParams)
         // 2. 先添加管道到窗口（使其位于下层）
@@ -736,17 +730,34 @@ class FloatingWindowService : Service() {
         }
     }
 
-    private fun createCircleButton(label: String): TextView {
+    private fun createCircleButton(label: String, pairId: Int, isStart: Boolean): TextView {
+        val isSwipePoint = pairId != -1
+        val sizeDp = 40
+        val sizePx = (sizeDp * resources.displayMetrics.density).toInt()
+        val colors = when {
+            !isSwipePoint -> intArrayOf(Color.parseColor("#FF8A50"), Color.parseColor("#FF5722"))
+            isStart -> intArrayOf(Color.parseColor("#28D17C"), Color.parseColor("#00A86B"))
+            else -> intArrayOf(Color.parseColor("#7C6CFF"), Color.parseColor("#4C5CFF"))
+        }
+        val strokeColor = when {
+            !isSwipePoint -> Color.parseColor("#FFFFF3")
+            isStart -> Color.parseColor("#D8FFE9")
+            else -> Color.parseColor("#E3E0FF")
+        }
+
         return TextView(this).apply {
             text = label
-            textSize = 20f
+            textSize = if (isSwipePoint) 14f else 18f
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
-            background = GradientDrawable().apply {
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            includeFontPadding = false
+            setShadowLayer(2f, 0f, 1f, Color.parseColor("#66000000"))
+            background = GradientDrawable(GradientDrawable.Orientation.TL_BR, colors).apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#FF5722")) // 橙色
+                setStroke((2 * resources.displayMetrics.density).toInt(), strokeColor)
             }
-            val sizePx = (35 * resources.displayMetrics.density).toInt()
+            elevation = 10f * resources.displayMetrics.density
             layoutParams = ViewGroup.LayoutParams(sizePx, sizePx)
         }
     }
@@ -1248,21 +1259,25 @@ class FloatingWindowService : Service() {
             pointSettingsDialog?.dismiss()
         }
 
-        // 外层容器添加百分比边距
-//        val wrapperView = FrameLayout(this).apply {
-//            val metrics = resources.displayMetrics
-//            val padH = (metrics.widthPixels * 0.1).toInt()   // 左右各 10%
-//            val padV = (metrics.heightPixels * 0.05).toInt()  // 上下各 10%
-//            setPadding(padH, padV, padH, padV)
-//            addView(dialogView)
-//        }
-        // 外层容器，设置 10% 屏幕边距，使卡片四周留空
+        // 外层容器铺满屏幕，左右各保留 5% 空隙；点击上下左右空白区域等同于取消
+        dialogView.isClickable = true
         val wrapper = FrameLayout(this).apply {
             val metrics = resources.displayMetrics
-            val padH = (metrics.widthPixels * 0.1).toInt()
+            val padH = (metrics.widthPixels * 0.05).toInt()
             val padV = (metrics.heightPixels * 0.05).toInt()
             setPadding(padH, padV, padH, padV)
-            addView(dialogView)
+            isClickable = true
+            setOnClickListener {
+                pointSettingsDialog?.dismiss()
+            }
+            addView(
+                dialogView,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    Gravity.CENTER
+                )
+            )
         }
 
         val builder = AlertDialog.Builder(this)
@@ -1281,11 +1296,14 @@ class FloatingWindowService : Service() {
                 }
             )
             window?.setGravity(Gravity.CENTER)
-            // 窗口大小自适应内容，四周的 padding 区域就是透明可点击的外部区域
-            window?.setLayout(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             window?.setBackgroundDrawableResource(android.R.color.transparent)
             setCanceledOnTouchOutside(true)   // 点击外部空白关闭
             show()
+            // show 之后设置全屏窗口，外层 wrapper 的 padding 区域才能完整接收上下左右空白点击
+            window?.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
     }
 
@@ -1380,24 +1398,7 @@ class FloatingWindowService : Service() {
                     if (isStart){
                         // 创建管道视图和参数
                         val lineView = PipeLineView(this)
-                        val lineParams = WindowManager.LayoutParams(
-                            100, 100, // 临时尺寸，稍后更新
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                            } else {
-                                WindowManager.LayoutParams.TYPE_PHONE
-                            },
-                            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                                    // 管道仅作视觉提示，不能拦截真实触摸或无障碍滑动路径
-                                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-                            PixelFormat.TRANSLUCENT
-                        ).apply {
-                            gravity = Gravity.START or Gravity.TOP
-                            x = 0
-                            y = 0
-                        }
+                        val lineParams = createPipeLineLayoutParams()
                         // 存入 map
                         pipeMap[pairId1] = Pair(lineView, lineParams)
                         // 2. 先添加管道到窗口（使其位于下层）
