@@ -1,5 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- 基础色 -->
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+
+    <!-- 主色（现代蓝） -->
+    <color name="primary">#FF2563EB</color>
+    <color name="primary_dark">#FF1D4ED8</color>
+    <color name="primary_light">#FF3B82F6</color>
+    <color name="primary_container">#FFDBEAFE</color>
+    <color name="on_primary">#FFFFFFFF</color>
+
+    <!-- 背景 / 表面 -->
+    <color name="background">#FFF5F7FA</color>
+    <color name="surface">#FFFFFFFF</color>
+    <color name="input_bg">#FFF1F5F9</color>
+    <color name="stroke">#FFE2E8F0</color>
+
+    <!-- 主页渐变背景（深蓝） -->
+    <color name="gradient_start">#38BDF8</color>    <!-- 浅天蓝，左上 -->
+    <color name="gradient_center">#3B82F6</color>   <!-- 亮蓝，中间 -->
+    <color name="gradient_end">#6366F1</color>      <!-- 蓝紫，右下 -->
+    <color name="gradient_blob_1">#40FFFFFF</color> <!-- 右上光斑：25% 白 -->
+    <color name="gradient_blob_2">#26FFFFFF</color> <!-- 左下光斑：15% 白 -->
+    <color name="status_bar_top">#FF1E3A8A</color>
+    <color name="on_gradient">#FFFFFFFF</color>
+    <color name="on_gradient_secondary">#B3FFFFFF</color>
+
+    <!-- 文字 -->
+    <color name="text_primary">#FF1F2937</color>
+    <color name="text_secondary">#FF6B7280</color>
+    <color name="text_hint">#FF9CA3AF</color>
+
+    <!-- 语义色 -->
+    <color name="success">#FF22C55E</color>
+    <color name="danger">#FFEF4444</color>
+    <color name="disabled">#FFD1D5DB</color>
 </resources>

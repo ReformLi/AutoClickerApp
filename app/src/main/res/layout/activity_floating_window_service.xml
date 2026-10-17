@@ -15,7 +15,7 @@
         android:layout_gravity="center"
         android:src="@drawable/ic_main"
         android:contentDescription="主按钮"
-        android:background="#448AFF"
+        android:background="@drawable/bg_floating_button"
         android:padding="8dp" />
 
     <!-- 展开的按钮区域（放在主按钮下方） -->
@@ -33,7 +33,7 @@
             android:layout_height="32dp"
             android:src="@drawable/ic_play"
             android:contentDescription="启动"
-            android:background="#448AFF"
+            android:background="@drawable/bg_floating_button"
             android:padding="6dp"
             android:layout_marginTop="4dp" />
 
@@ -44,7 +44,7 @@
             android:layout_height="32dp"
             android:src="@drawable/ic_add"
             android:contentDescription="添加"
-            android:background="#448AFF"
+            android:background="@drawable/bg_floating_button"
             android:padding="6dp"
             android:layout_marginTop="4dp" />
 
@@ -55,7 +55,7 @@
             android:layout_height="32dp"
             android:src="@drawable/ic_slide"
             android:contentDescription="滑动"
-            android:background="#448AFF"
+            android:background="@drawable/bg_floating_button"
             android:padding="6dp"
             android:layout_marginTop="4dp" />
 
@@ -66,7 +66,7 @@
             android:layout_height="32dp"
             android:src="@drawable/ic_remove"
             android:contentDescription="减少"
-            android:background="#448AFF"
+            android:background="@drawable/bg_floating_button"
             android:padding="6dp"
             android:layout_marginTop="4dp" />
 
@@ -77,7 +77,7 @@
             android:layout_height="32dp"
             android:src="@drawable/ic_settings"
             android:contentDescription="设置"
-            android:background="#448AFF"
+            android:background="@drawable/bg_floating_button"
             android:padding="6dp"
             android:layout_marginTop="4dp" />
 
@@ -88,7 +88,7 @@
             android:layout_height="32dp"
             android:src="@drawable/ic_hide"
             android:contentDescription="隐藏"
-            android:background="#448AFF"
+            android:background="@drawable/bg_floating_button"
             android:padding="6dp"
             android:layout_marginTop="4dp" />
 
@@ -99,7 +99,7 @@
             android:layout_height="32dp"
             android:src="@drawable/ic_exit"
             android:contentDescription="退出"
-            android:background="#448AFF"
+            android:background="@drawable/bg_floating_button"
             android:padding="6dp"
             android:layout_marginTop="4dp" />
 

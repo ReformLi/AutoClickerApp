@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- 透明悬浮窗主题 -->
     <style name="TransparentDialogTheme" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>
@@ -7,5 +8,87 @@
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowIsFloating">false</item>
+    </style>
+
+    <!-- ===================== 全局复用样式 ===================== -->
+
+    <!-- 主按钮：蓝底白字，12dp 圆角 -->
+    <style name="ModernButton" parent="Widget.Material3.Button">
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:paddingStart">20dp</item>
+        <item name="android:paddingEnd">20dp</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="cornerRadius">12dp</item>
+        <item name="backgroundTint">@color/primary</item>
+        <item name="rippleColor">@color/primary_dark</item>
+    </style>
+
+    <!-- 描边按钮：白底蓝字蓝描边（深色背景上同样醒目） -->
+    <style name="ModernButton.Outline" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:paddingStart">20dp</item>
+        <item name="android:paddingEnd">20dp</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="cornerRadius">12dp</item>
+        <item name="backgroundTint">@color/surface</item>
+        <item name="strokeColor">@color/primary</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="android:textColor">@color/primary</item>
+        <item name="rippleColor">@color/primary_container</item>
+    </style>
+
+    <!-- 输入框：浅色填充 + 12dp 圆角，聚焦蓝色描边 -->
+    <style name="ModernEditText" parent="Widget.AppCompat.EditText">
+        <item name="android:background">@drawable/bg_edittext</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:paddingStart">14dp</item>
+        <item name="android:paddingEnd">14dp</item>
+        <item name="android:paddingTop">12dp</item>
+        <item name="android:paddingBottom">12dp</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textColorHint">@color/text_hint</item>
+    </style>
+
+    <!-- 单选按钮：蓝色选中态 -->
+    <style name="ModernRadioButton" parent="Widget.AppCompat.CompoundButton.RadioButton">
+        <item name="android:minHeight">44dp</item>
+        <item name="android:paddingStart">4dp</item>
+        <item name="android:paddingEnd">4dp</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="buttonTint">@color/primary</item>
+    </style>
+
+    <!-- 页面标题：20sp 加粗 -->
+    <style name="ModernText.Title" parent="TextAppearance.AppCompat">
+        <item name="android:textSize">20sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">@color/text_primary</item>
+    </style>
+
+    <!-- 区块标签：14sp 次要色 -->
+    <style name="ModernText.Label" parent="TextAppearance.AppCompat">
+        <item name="android:textSize">14sp</item>
+        <item name="android:textColor">@color/text_secondary</item>
+    </style>
+
+    <!-- 正文：16sp 主色 -->
+    <style name="ModernText.Body" parent="TextAppearance.AppCompat">
+        <item name="android:textSize">16sp</item>
+        <item name="android:textColor">@color/text_primary</item>
+    </style>
+
+    <!-- 卡片：白底 12dp 圆角 -->
+    <style name="ModernCard">
+        <item name="android:background">@drawable/bg_card</item>
     </style>
 </resources>

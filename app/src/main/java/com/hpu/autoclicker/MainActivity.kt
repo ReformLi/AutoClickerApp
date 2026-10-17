@@ -149,10 +149,10 @@ class MainActivity : AppCompatActivity() {
 
         // 获取权限按钮：两个权限都满足 → 绿色，否则红色
         if (hasOverlay && hasAccessibility) {
-            btnRequestPermission.backgroundTintList = getColorStateList(android.R.color.holo_green_dark)
+            btnRequestPermission.backgroundTintList = getColorStateList(R.color.success)
             btnRequestPermission.text = "权限已获取"
         } else {
-            btnRequestPermission.backgroundTintList = getColorStateList(android.R.color.holo_red_light)
+            btnRequestPermission.backgroundTintList = getColorStateList(R.color.danger)
             btnRequestPermission.text = "获取权限"
         }
 
@@ -161,7 +161,8 @@ class MainActivity : AppCompatActivity() {
         btnToggleService.isEnabled = allPermissionsGranted
 
         if (!allPermissionsGranted) {
-            btnToggleService.backgroundTintList = getColorStateList(android.R.color.darker_gray)
+            btnToggleService.backgroundTintList = getColorStateList(R.color.disabled)
+            btnToggleService.setTextColor(getColor(R.color.text_secondary))
             btnToggleService.text = "启动悬浮窗"
         } else {
             isServiceRunning = isFloatingServiceRunning()
@@ -231,10 +232,13 @@ class MainActivity : AppCompatActivity() {
     private fun updateToggleButton() {
         if (isServiceRunning) {
             btnToggleService.text = "关闭悬浮窗"
-            btnToggleService.backgroundTintList = getColorStateList(android.R.color.holo_red_light)
+            btnToggleService.backgroundTintList = getColorStateList(R.color.danger)
+            btnToggleService.setTextColor(getColor(R.color.white))
         } else {
+            // 深蓝渐变背景上用白底蓝字，保证按钮醒目
             btnToggleService.text = "启动悬浮窗"
-            btnToggleService.backgroundTintList = getColorStateList(android.R.color.holo_blue_light)
+            btnToggleService.backgroundTintList = getColorStateList(R.color.white)
+            btnToggleService.setTextColor(getColor(R.color.primary))
         }
     }
 

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 底层：深蓝三段对角渐变 -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="315"
+                android:type="linear"
+                android:startColor="@color/gradient_start"
+                android:centerColor="@color/gradient_center"
+                android:endColor="@color/gradient_end" />
+        </shape>
+    </item>
+
+    <!-- 装饰光斑：右上（白色 10% 透明） -->
+    <item
+        android:width="300dp"
+        android:height="300dp"
+        android:gravity="top|end"
+        android:top="-90dp"
+        android:end="-70dp">
+        <shape android:shape="oval">
+            <solid android:color="@color/gradient_blob_1" />
+        </shape>
+    </item>
+
+    <!-- 装饰光斑：左下（白色 8% 透明） -->
+    <item
+        android:width="260dp"
+        android:height="260dp"
+        android:gravity="bottom|start"
+        android:bottom="-80dp"
+        android:start="-60dp">
+        <shape android:shape="oval">
+            <solid android:color="@color/gradient_blob_2" />
+        </shape>
+    </item>
+</layer-list>

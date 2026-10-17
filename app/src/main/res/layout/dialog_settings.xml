@@ -1,67 +1,90 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<HorizontalScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/settingsRoot"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content"
-    android:orientation="vertical"
-    android:padding="16dp"
-    android:background="@drawable/dialog_background">
+    android:layout_height="match_parent"
+    android:background="@drawable/dialog_background"
+    android:fillViewport="true"
+    android:scrollbars="none">
 
-    <LinearLayout
+    <ScrollView
+        android:id="@+id/settingsScrollView"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="24dp"
-        android:layout_marginBottom="24dp">
+        android:layout_height="match_parent"
+        android:fillViewport="true"
+        android:scrollbars="none">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="总循环次数："
-            android:textSize="16sp" />
-
-        <EditText
-            android:id="@+id/etLoopCount"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="0 表示无限循环"
-            android:inputType="number" />
-    </LinearLayout>
+            android:orientation="vertical"
+            android:padding="24dp">
 
-    <Button
-        android:id="@+id/btnSavePoints"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="保存当前点击位置" />
+            <!-- 标题 -->
+            <TextView
+                style="@style/ModernText.Title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="悬浮窗设置" />
 
-    <Button
-        android:id="@+id/btnLoadPoints"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="打开点击文件" />
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="24dp">
+            <!-- 总循环次数 -->
+            <TextView
+                style="@style/ModernText.Label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="总循环次数" />
 
-        <Button
-            android:id="@+id/btnCancelSettings"
-            android:layout_width="0dp"
-            android:layout_weight="1"
-            android:layout_height="wrap_content"
-            android:text="取消" />
+            <EditText
+                android:id="@+id/etLoopCount"
+                style="@style/ModernEditText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="0 表示无限循环"
+                android:inputType="number" />
 
-        <Button
-            android:id="@+id/btnConfirmSettings"
-            android:layout_width="0dp"
-            android:layout_weight="1"
-            android:layout_height="wrap_content"
-            android:text="确定"
-            android:layout_marginStart="8dp" />
-    </LinearLayout>
-<!--    <Button-->
-<!--        android:id="@+id/btnCancelSettings"-->
-<!--        android:layout_width="match_parent"-->
-<!--        android:layout_height="wrap_content"-->
-<!--        android:text="取消" />-->
-</LinearLayout>
+            <!-- 文件操作 -->
+            <Button
+                android:id="@+id/btnSavePoints"
+                style="@style/ModernButton.Outline"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="24dp"
+                android:text="保存当前点击位置" />
+
+            <Button
+                android:id="@+id/btnLoadPoints"
+                style="@style/ModernButton.Outline"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="12dp"
+                android:text="打开点击文件" />
+
+            <!-- 底部操作 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnCancelSettings"
+                    style="@style/ModernButton.Outline"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_marginEnd="8dp"
+                    android:layout_weight="1"
+                    android:text="取消" />
+
+                <Button
+                    android:id="@+id/btnConfirmSettings"
+                    style="@style/ModernButton"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:text="确定" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+</HorizontalScrollView>

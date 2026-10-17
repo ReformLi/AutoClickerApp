@@ -4,50 +4,60 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/dialog_background"
-    android:fillViewport="true">
+    android:fillViewport="true"
+    android:scrollbars="none">
 
     <ScrollView
         android:id="@+id/settingsScrollView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:fillViewport="true">
+        android:fillViewport="true"
+        android:scrollbars="none">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="16dp">
+            android:padding="24dp">
+
+            <!-- 标题 -->
+            <TextView
+                style="@style/ModernText.Title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="点击点设置" />
 
             <!-- 按钮名称 -->
+            <TextView
+                style="@style/ModernText.Label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="点击名称" />
+
+            <EditText
+                android:id="@+id/etName"
+                style="@style/ModernEditText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="按钮名称"
+                android:focusable="false"
+                android:cursorVisible="false"
+                android:inputType="none" />
+
+            <!-- 类型 -->
+            <TextView
+                style="@style/ModernText.Label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:text="点击类型" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="24dp">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="0dp"
-                    android:layout_weight="1"
-                    android:text="点击名称："
-                    android:textSize="16sp" />
-
-                <EditText
-                    android:id="@+id/etName"
-                    android:layout_width="0dp"
-                    android:layout_weight="2"
-                    android:layout_height="wrap_content"
-                    android:hint="按钮名称"
-                    android:focusable="false"
-                    android:cursorVisible="false"
-                    android:inputType="none" />
-            </LinearLayout>
-
-            <!-- 类型（使用 layout_weight 均分布局） -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
                 android:orientation="vertical"
                 android:id="@+id/layoutTypeContainer">
 
@@ -59,6 +69,7 @@
 
                     <RadioButton
                         android:id="@+id/rbClick"
+                        style="@style/ModernRadioButton"
                         android:layout_width="0dp"
                         android:layout_weight="1"
                         android:layout_height="wrap_content"
@@ -66,12 +77,14 @@
                         android:checked="true" />
                     <RadioButton
                         android:id="@+id/rbDoubleClick"
+                        style="@style/ModernRadioButton"
                         android:layout_width="0dp"
                         android:layout_weight="1"
                         android:layout_height="wrap_content"
                         android:text="双击" />
                     <RadioButton
                         android:id="@+id/rbBack"
+                        style="@style/ModernRadioButton"
                         android:layout_width="0dp"
                         android:layout_weight="1"
                         android:layout_height="wrap_content"
@@ -86,22 +99,18 @@
 
                     <RadioButton
                         android:id="@+id/rbHome"
+                        style="@style/ModernRadioButton"
                         android:layout_width="0dp"
                         android:layout_weight="1"
                         android:layout_height="wrap_content"
                         android:text="主页键" />
                     <RadioButton
                         android:id="@+id/rbNotification"
+                        style="@style/ModernRadioButton"
                         android:layout_width="0dp"
                         android:layout_weight="1"
                         android:layout_height="wrap_content"
                         android:text="打开通知栏" />
-<!--                    <RadioButton-->
-<!--                        android:id="@+id/rbLongClick"-->
-<!--                        android:layout_width="0dp"-->
-<!--                        android:layout_weight="1"-->
-<!--                        android:layout_height="wrap_content"-->
-<!--                        android:text="长按" />-->
                 </LinearLayout>
 
                 <!-- 第三行：滑动（仅滑动点时显示） -->
@@ -113,6 +122,7 @@
 
                     <RadioButton
                         android:id="@+id/rbSwipe"
+                        style="@style/ModernRadioButton"
                         android:layout_width="0dp"
                         android:layout_weight="1"
                         android:layout_height="wrap_content"
@@ -121,22 +131,24 @@
 
             </LinearLayout>
 
-            <!-- 点击位置（同样均分） -->
+            <!-- 点击位置 -->
             <TextView
+                style="@style/ModernText.Label"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="点击位置"
-                android:textSize="16sp"
-                android:layout_marginTop="16dp" />
+                android:layout_marginTop="20dp"
+                android:text="点击位置" />
 
             <RadioGroup
                 android:id="@+id/rgPosition"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
                 android:orientation="horizontal">
 
                 <RadioButton
                     android:id="@+id/rbCenter"
+                    style="@style/ModernRadioButton"
                     android:layout_width="0dp"
                     android:layout_weight="1"
                     android:layout_height="wrap_content"
@@ -144,6 +156,7 @@
                     android:checked="true" />
                 <RadioButton
                     android:id="@+id/rbRandom"
+                    style="@style/ModernRadioButton"
                     android:layout_width="0dp"
                     android:layout_weight="1"
                     android:layout_height="wrap_content"
@@ -152,85 +165,96 @@
 
             <!-- 延迟 -->
             <TextView
+                style="@style/ModernText.Label"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="延迟（毫秒）"
-                android:textSize="16sp"
-                android:layout_marginTop="16dp" />
+                android:layout_marginTop="20dp"
+                android:text="延迟（毫秒）" />
 
             <EditText
                 android:id="@+id/etDelay"
+                style="@style/ModernEditText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
                 android:inputType="number"
                 android:hint="0" />
 
             <!-- 触摸时长 -->
             <TextView
                 android:id="@+id/tvTouchDurationLabel"
+                style="@style/ModernText.Label"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="触摸时长（毫秒）"
-                android:textSize="16sp"
-                android:layout_marginTop="16dp" />
+                android:layout_marginTop="20dp"
+                android:text="触摸时长（毫秒）" />
 
             <EditText
                 android:id="@+id/etTouchDuration"
+                style="@style/ModernEditText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
                 android:inputType="number"
                 android:hint="100" />
 
             <!-- 重复次数 -->
             <TextView
+                style="@style/ModernText.Label"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="重复次数"
-                android:textSize="16sp"
-                android:layout_marginTop="16dp" />
+                android:layout_marginTop="20dp"
+                android:text="重复次数" />
 
             <EditText
                 android:id="@+id/etRepeatCount"
+                style="@style/ModernEditText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
                 android:inputType="number"
                 android:hint="1" />
 
             <!-- 随机距离 -->
             <TextView
+                style="@style/ModernText.Label"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="随机距离（像素）"
-                android:textSize="16sp"
-                android:layout_marginTop="16dp" />
+                android:layout_marginTop="20dp"
+                android:text="随机距离（像素）" />
 
             <EditText
                 android:id="@+id/etRandomDistance"
+                style="@style/ModernEditText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
                 android:inputType="number"
                 android:hint="0" />
 
+            <!-- 底部操作 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="24dp">
+                android:layout_marginTop="24dp"
+                android:orientation="horizontal">
 
                 <Button
                     android:id="@+id/btnCancel"
+                    style="@style/ModernButton.Outline"
                     android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_marginEnd="8dp"
                     android:layout_weight="1"
-                    android:layout_height="wrap_content"
                     android:text="取消" />
 
                 <Button
                     android:id="@+id/btnSave"
+                    style="@style/ModernButton"
                     android:layout_width="0dp"
+                    android:layout_height="48dp"
                     android:layout_weight="1"
-                    android:layout_height="wrap_content"
-                    android:text="保存"
-                    android:layout_marginStart="8dp" />
+                    android:text="保存" />
             </LinearLayout>
         </LinearLayout>
     </ScrollView>
