@@ -117,7 +117,7 @@ class AutoClickerAccessibilityService : AccessibilityService() {
             startClicking(targetX, targetY, clickInterval)
         }
     }
-    fun performClick(x: Float, y: Float, duration: Long = 300) {
+    fun performClick(x: Float, y: Float, duration: Long = 300, onResult: ((Boolean) -> Unit)? = null) {
         Log.d("点击位置", ""+x+" "+y)
         val clickDuration = duration.coerceAtLeast(50L)
 
@@ -134,10 +134,12 @@ class AutoClickerAccessibilityService : AccessibilityService() {
             val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
                 override fun onCompleted(desc: GestureDescription?) {
                     Log.d("ClickDebug", "手势点击成功: x=$x, y=$y")
+                    onResult?.invoke(true)
                 }
 
                 override fun onCancelled(desc: GestureDescription?) {
                     Log.e("ClickDebug", "手势点击被取消: x=$x, y=$y")
+                    onResult?.invoke(false)
                 }
             }, null)
 
@@ -153,9 +155,103 @@ class AutoClickerAccessibilityService : AccessibilityService() {
             val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             Log.d("ClickDebug", "控件点击回退结果: $clicked")
             node.recycle()
+            onResult?.invoke(clicked)
         } else {
             Log.w("ClickDebug", "未找到可点击控件，点击失败: x=$x, y=$y")
+            onResult?.invoke(false)
         }
+    }
+
+    /**
+     * 文本匹配查找目标：返回目标节点的屏幕中心点坐标，null 表示匹配失败。
+     * 匹配规则（QuickClick 新功能）：
+     * 1. findAccessibilityNodeInfosByText 部分匹配、不区分大小写，返回多结果需二次筛选；
+     * 2. Android 14+ 敏感节点会返回“有壳无字”的节点（节点存在但 text 为空），
+     *    必须校验节点确实包含目标文本，否则判定为匹配失败；
+     * 3. 优先取 isClickable 节点 → 其次最深层且文本精确相等的节点 → 再次第一个有有效边界的节点；
+     * 4. rootInActiveWindow 为 null 时直接判定失败（调用方负责兜底提示）。
+     */
+    fun findTargetByText(targetText: String): PointF? {
+        if (targetText.isBlank()) return null
+        val root = rootInActiveWindow ?: return null
+        val nodes = try {
+            root.findAccessibilityNodeInfosByText(targetText)
+        } catch (e: Exception) {
+            Log.e(TAG, "文本匹配异常", e)
+            null
+        }
+        if (nodes.isNullOrEmpty()) return null
+
+        // 二次筛选：排除“有壳无字”节点，只保留确实包含目标文本的节点
+        val valid = nodes.filter { n ->
+            n.text?.toString()?.contains(targetText, ignoreCase = true) == true ||
+                n.contentDescription?.toString()?.contains(targetText, ignoreCase = true) == true
+        }
+        if (valid.isEmpty()) return null
+
+        val rect = android.graphics.Rect()
+        val screen = screenBounds()
+
+        // 1. 优先可点击节点
+        val clickable = valid.filter { it.isClickable }
+        if (clickable.isNotEmpty()) {
+            val n = clickable.firstOrNull { hasValidBounds(it, rect, screen) }
+            if (n != null) return centerOf(n, rect)
+        }
+
+        // 2. 最深层且文本精确相等的节点
+        val exact = valid.filter { it.text?.toString()?.equals(targetText, ignoreCase = true) == true }
+        val exactCandidates = if (exact.isNotEmpty()) exact else valid
+        val deepest = exactCandidates
+            .map { it to nodeDepth(it) }
+            .maxByOrNull { it.second }
+            ?.first
+        if (deepest != null && hasValidBounds(deepest, rect, screen)) {
+            return centerOf(deepest, rect)
+        }
+
+        // 3. 第一个有有效边界的节点
+        val fallback = valid.firstOrNull { hasValidBounds(it, rect, screen) }
+        if (fallback != null) return centerOf(fallback, rect)
+        return null
+    }
+
+    /** 节点边界是否有效（非零尺寸且落在屏幕范围内） */
+    private fun hasValidBounds(
+        node: AccessibilityNodeInfo,
+        rect: android.graphics.Rect,
+        screen: android.graphics.Rect
+    ): Boolean {
+        return try {
+            node.getBoundsInScreen(rect)
+            rect.width() > 0 && rect.height() > 0 && android.graphics.Rect.intersects(rect, screen)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** 取节点屏幕边界的中心点 */
+    private fun centerOf(node: AccessibilityNodeInfo, rect: android.graphics.Rect): PointF {
+        node.getBoundsInScreen(rect)
+        return PointF(rect.exactCenterX(), rect.exactCenterY())
+    }
+
+    /** 计算节点在节点树中的深度 */
+    private fun nodeDepth(node: AccessibilityNodeInfo): Int {
+        var depth = 0
+        var cur = node
+        while (true) {
+            val p = try { cur.parent } catch (e: Exception) { null } ?: break
+            depth++
+            cur = p
+        }
+        return depth
+    }
+
+    /** 无障碍服务可用的屏幕范围 */
+    private fun screenBounds(): android.graphics.Rect {
+        val dm = resources.displayMetrics
+        return android.graphics.Rect(0, 0, dm.widthPixels, dm.heightPixels)
     }
 
     /**

@@ -78,6 +78,44 @@
         android:layout_marginTop="12dp"
         android:text="刷新状态" />
 
+    <!-- 新旧功能切换：分段开关样式（选择会持久化，默认旧功能） -->
+    <LinearLayout
+        android:id="@+id/modeSwitchTrack"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="16dp"
+        android:orientation="horizontal"
+        android:background="@drawable/bg_mode_switch_track"
+        android:padding="4dp">
+
+        <TextView
+            android:id="@+id/tvModeOld"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="连点器"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="@color/primary"
+            android:background="@drawable/bg_mode_switch_thumb"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <TextView
+            android:id="@+id/tvModeNew"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="代点器"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="@color/on_gradient"
+            android:clickable="true"
+            android:focusable="true" />
+    </LinearLayout>
+
     <Button
         android:id="@+id/btnToggleService"
         style="@style/ModernButton"
