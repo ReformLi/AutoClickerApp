@@ -7,29 +7,29 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Point
-import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.text.InputFilter
 import android.view.Gravity
-import android.view.LayoutInflater
 import android.view.MotionEvent
-import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.Button
-import android.widget.CheckBox
 import android.widget.EditText
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
+import androidx.compose.ui.platform.ComposeView
+import com.hpu.autoclicker.ui.QuickConfigDialogContent
+import com.hpu.autoclicker.ui.QuickConfigFormState
+import com.hpu.autoclicker.ui.QuickFloatingContent
+import com.hpu.autoclicker.ui.QuickFloatingUiState
+import com.hpu.autoclicker.ui.ScriptManagerDialogContent
+import com.hpu.autoclicker.ui.ScriptManagerState
+import com.hpu.autoclicker.ui.ServiceComposeHost
+import com.hpu.autoclicker.ui.theme.AutoClickerTheme
 
 /**
  * 悬浮快捷点击服务（新功能）
@@ -46,6 +46,13 @@ import android.widget.Toast
  * 手势状态机：总按钮统一在 OnTouchListener 内处理单击/拖动/双击，
  * 禁止混用三套事件；位移 > touchSlop 判定为拖动，拖动过程中绝不触发识别/点击；
  * 松手边缘吸附（左/右），坐标始终用屏幕绝对坐标。
+ *
+ * 【UI 层迁移说明】原 `quick_floating_root.xml` 已改为 Compose：
+ * - 悬浮窗根视图由 LinearLayout 换成 [ComposeView]，内容为 [QuickFloatingContent]；
+ * - 展开/折叠、编辑态、子按钮列表不再靠 addView/removeView 手动刷新，
+ *   而由 [QuickFloatingUiState] 驱动 Compose 重组（业务逻辑不变）；
+ * - 触摸状态机仍直接消费 MotionEvent 原始坐标（rawX/rawY），
+ *   因此拖动跟手、边缘吸附、长按排序的行为与原来完全一致。
  */
 class QuickClickService : Service() {
 
@@ -72,14 +79,21 @@ class QuickClickService : Service() {
     }
 
     private lateinit var windowManager: WindowManager
-    private lateinit var root: LinearLayout
-    private lateinit var expandedControls: LinearLayout
-    private lateinit var btnMain: ImageView
+
+    /** 悬浮窗根视图：由 XML 的 LinearLayout 换成 ComposeView */
+    private lateinit var root: ComposeView
     private lateinit var lp: WindowManager.LayoutParams
 
+    /** ComposeView 在 Service 中所需的生命周期宿主（缺失会抛 ViewTreeLifecycleOwner not found） */
+    private val composeHost = ServiceComposeHost()
+
+    /** 悬浮窗 UI 状态（展开/编辑态、子按钮列表、按下/拖动反馈），替代原来的 View 手工刷新 */
+    private val ui = QuickFloatingUiState()
+
+    /** 子按钮配置列表（原内存态 configs，现由 Compose 状态持有，增删改自动刷新 UI） */
+    private val configs: MutableList<QuickClickConfig> get() = ui.configs
+
     private var rootAdded = false
-    private var isExpanded = false
-    private var isEditing = false
 
     // ===== 手势状态机变量（总按钮） =====
     private var touchSlop = 0
@@ -97,10 +111,9 @@ class QuickClickService : Service() {
     private var dragStartRawY = 0f
     private var dragMoved = false        // 长按前超 touchSlop 取消长按计时
     private var dragActive = false       // 长按触发，进入拖动排序
-    private var parentTopOnScreen = 0    // expandedControls 顶部屏幕绝对坐标
-
-    // ===== 配置 =====
-    private val configs = mutableListOf<QuickClickConfig>()
+    private var parentTopOnScreen = 0    // 展开区顶部屏幕绝对坐标
+    private var dragIndex = -1           // 正在拖动的子按钮在 configs 中的索引
+    private var expandedTopInRoot = 0f   // 展开区在根视图内的 Y 偏移（px），用于换算屏幕坐标
 
     // 当前按钮列表来自哪个脚本（从脚本管理加载后记录，保存时预填名称）
     private var currentScriptName: String? = null
@@ -114,11 +127,25 @@ class QuickClickService : Service() {
         // 启动为空白编辑态：不自动恢复上次的按钮列表，已保存脚本需在「设置」中手动加载
         configs.clear()
 
-        root = LayoutInflater.from(this).inflate(R.layout.quick_floating_root, null) as LinearLayout
-        expandedControls = root.findViewById(R.id.quickExpandedControls)
-        btnMain = root.findViewById(R.id.quickBtnMain)
-
-        setupMainButton()
+        // === 原：LayoutInflater.inflate(R.layout.quick_floating_root) ===
+        // === 现：ComposeView + Compose 内容 ===
+        root = ComposeView(this)
+        composeHost.attach(root)   // 注入生命周期宿主，否则 setContent 会抛异常
+        root.setContent {
+            AutoClickerTheme {
+                QuickFloatingContent(
+                    state = ui,
+                    onMainTouch = { event -> onMainTouch(event) },
+                    onAdd = { showConfigDialog() },
+                    onRemoveLast = { removeLastConfig() },
+                    onOpenSettings = { showScriptManagerDialog() },
+                    onExitEdit = { exitEditMode() },
+                    onChildClick = { cfg -> onChildClicked(cfg) },
+                    onChildTouch = { index, event -> onChildTouch(index, event) },
+                    onExpandedPositioned = { top -> expandedTopInRoot = top },
+                )
+            }
+        }
 
         lp = WindowManager.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -134,10 +161,11 @@ class QuickClickService : Service() {
             PixelFormat.TRANSLUCENT
         )
 
-        root.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        // 折叠态高度固定为「8dp 上间距 + 40dp 主按钮 + 8dp 下间距」= 56dp，
+        // Compose 内容在 addView 之前无法测量，故用该固定值估算初始居中位置
         lp.gravity = Gravity.START or Gravity.TOP   // x/y 即屏幕绝对坐标
         lp.x = 0
-        lp.y = (getScreenHeight() - root.measuredHeight) / 2
+        lp.y = (getScreenHeight() - dp(56)) / 2
 
         try {
             windowManager.addView(root, lp)
@@ -174,6 +202,7 @@ class QuickClickService : Service() {
             }
             rootAdded = false
         }
+        composeHost.destroy()   // 释放 ComposeView 的生命周期宿主
         super.onDestroy()
     }
 
@@ -182,49 +211,51 @@ class QuickClickService : Service() {
     /**
      * 总按钮手势状态机：单击展开/折叠、双击进编辑态、位移超阈值判定为拖动。
      * 不使用 onClick/LongClick，避免事件互相吞。
+     * 由 Compose 的 pointerInteropFilter 回调进来，事件坐标同为屏幕绝对坐标。
      */
-    private fun setupMainButton() {
-        btnMain.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downRawX = event.rawX           // 屏幕绝对坐标，防多窗口偏移
-                    downRawY = event.rawY
-                    initWindowX = lp.x
-                    initWindowY = lp.y
-                    isDragging = false
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX - downRawX
-                    val dy = event.rawY - downRawY
-                    if (!isDragging && dx * dx + dy * dy > touchSlop * touchSlop) {
-                        isDragging = true           // 超过 touchSlop 立即进入拖动态
-                    }
-                    if (isDragging) {
-                        lp.x = initWindowX + dx.toInt()
-                        lp.y = (initWindowY + dy.toInt())
-                            .coerceIn(0, (getScreenHeight() - root.height).coerceAtLeast(0))
-                        try {
-                            windowManager.updateViewLayout(root, lp)  // 跟手移动，不重建 View
-                        } catch (e: Exception) {
-                            android.util.Log.e("QuickClick", "updateViewLayout 失败", e)
-                        }
-                    }
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (isDragging) {
-                        if (event.actionMasked == MotionEvent.ACTION_UP) {
-                            snapToEdge()            // 拖动结束：吸附最近左/右边缘，y 保持
-                        }
-                    } else if (event.actionMasked == MotionEvent.ACTION_UP) {
-                        handleMainTap()             // 未拖动且非取消 → 单击/双击判定
-                    }
-                    isDragging = false
-                    true
-                }
-                else -> false
+    private fun onMainTouch(event: MotionEvent): Boolean {
+        return when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downRawX = event.rawX           // 屏幕绝对坐标，防多窗口偏移
+                downRawY = event.rawY
+                initWindowX = lp.x
+                initWindowY = lp.y
+                isDragging = false
+                ui.mainPressed = true           // 按下反馈（等价原 bg_floating_button 的 pressed 态）
+                true
             }
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.rawX - downRawX
+                val dy = event.rawY - downRawY
+                if (!isDragging && dx * dx + dy * dy > touchSlop * touchSlop) {
+                    isDragging = true           // 超过 touchSlop 立即进入拖动态
+                    ui.mainPressed = false      // 进入拖动即取消按下反馈
+                }
+                if (isDragging) {
+                    lp.x = initWindowX + dx.toInt()
+                    lp.y = (initWindowY + dy.toInt())
+                        .coerceIn(0, (getScreenHeight() - root.height).coerceAtLeast(0))
+                    try {
+                        windowManager.updateViewLayout(root, lp)  // 跟手移动，不重建 View
+                    } catch (e: Exception) {
+                        android.util.Log.e("QuickClick", "updateViewLayout 失败", e)
+                    }
+                }
+                true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                ui.mainPressed = false
+                if (isDragging) {
+                    if (event.actionMasked == MotionEvent.ACTION_UP) {
+                        snapToEdge()            // 拖动结束：吸附最近左/右边缘，y 保持
+                    }
+                } else if (event.actionMasked == MotionEvent.ACTION_UP) {
+                    handleMainTap()             // 未拖动且非取消 → 单击/双击判定
+                }
+                isDragging = false
+                true
+            }
+            else -> false
         }
     }
 
@@ -237,8 +268,8 @@ class QuickClickService : Service() {
         } else {
             lastMainTapAt = now
             when {
-                isEditing -> exitEditMode()         // 编辑态单击总按钮 → 退出编辑（保持展开）
-                isExpanded -> collapse()            // 展开态单击 → 折叠
+                ui.isEditing -> exitEditMode()      // 编辑态单击总按钮 → 退出编辑（保持展开）
+                ui.isExpanded -> collapse()         // 展开态单击 → 折叠
                 else -> expand()                    // 折叠态单击 → 展开
             }
         }
@@ -257,6 +288,8 @@ class QuickClickService : Service() {
     }
 
     // ==================== 展开 / 折叠 / 编辑态 ====================
+    // 说明：原来这三态靠 expandedControls 的 addView/removeView + visibility 手工刷新，
+    // 现在只改 ui 状态，由 Compose 自动重组（对外行为一致）。
 
     private fun expand() {
         // 无障碍服务未开启/被系统杀掉：总按钮变灰并提示
@@ -270,50 +303,20 @@ class QuickClickService : Service() {
             enterEditMode()
             return
         }
-        isExpanded = true
-        rebuildExpanded()
-        expandedControls.visibility = View.VISIBLE
+        ui.isExpanded = true
         clampWindowY()
     }
 
     private fun collapse() {
-        expandedControls.removeAllViews()
-        expandedControls.visibility = View.GONE
-        isExpanded = false
-        isEditing = false   // 折叠即退出编辑态，编辑控件不常驻
-    }
-
-    /** 重建展开区；编辑态结构：[+] 子按钮列表 [-] [设置] [取消] */
-    private fun rebuildExpanded() {
-        expandedControls.removeAllViews()
-        if (isEditing) {
-            expandedControls.addView(
-                buildControlRow(R.drawable.ic_add, "添加") { showConfigDialog() }
-            )
-        }
-        configs.forEach { expandedControls.addView(buildChildRow(it)) }
-        if (isEditing) {
-            expandedControls.addView(
-                buildControlRow(R.drawable.ic_remove, "减少") { removeLastConfig() }
-            )
-            expandedControls.addView(
-                buildControlRow(R.drawable.ic_settings, "设置") { showScriptManagerDialog() }
-            )
-            expandedControls.addView(
-                buildControlRow(R.drawable.ic_exit, "取消") { exitEditMode() }
-            )
-        }
+        ui.isExpanded = false
+        ui.isEditing = false   // 折叠即退出编辑态，编辑控件不常驻
     }
 
     private fun enterEditMode() {
-        if (!isExpanded) {
-            isExpanded = true
-            expandedControls.visibility = View.VISIBLE
-        }
-        isEditing = true
+        ui.isExpanded = true
+        ui.isEditing = true
         lastMainTapAt = 0L   // 重置双击计时，避免刚进编辑态的下一次点击被误判为双击
         setMainAvailable(true)
-        rebuildExpanded()
         clampWindowY()
     }
 
@@ -322,12 +325,11 @@ class QuickClickService : Service() {
      * 无子按钮时回到折叠态（只剩总按钮），保证编辑态始终可退出。
      */
     private fun exitEditMode() {
-        isEditing = false
+        ui.isEditing = false
         lastMainTapAt = 0L
         if (configs.isEmpty()) {
             collapse()
         } else {
-            rebuildExpanded()
             clampWindowY()
         }
     }
@@ -339,158 +341,100 @@ class QuickClickService : Service() {
             return
         }
         val removed = configs.removeAt(configs.size - 1)
-        rebuildExpanded()
         clampWindowY()
         Toast.makeText(this, "已删除「${removed.name}」", Toast.LENGTH_SHORT).show()
     }
 
-    // ==================== 行视图构建 ====================
-
-    /** 编辑态控制行：与旧功能一致的 32dp 图标行（+/-/设置/取消） */
-    private fun buildControlRow(iconRes: Int, desc: String, onClick: () -> Unit): ImageView {
-        val row = ImageView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(32)
-            ).apply { topMargin = dp(4) }
-            setImageResource(iconRes)
-            contentDescription = desc
-            background = getDrawableCompat(R.drawable.bg_floating_button)
-            setPadding(dp(6), dp(6), dp(6), dp(6))
-            setOnClickListener { onClick() }
-        }
-        return row
-    }
-
-    /**
-     * 子按钮行：非编辑态点击触发识别；编辑态长按拖动排序（始终处于 + 和 - 之间）
-     */
-    private fun buildChildRow(cfg: QuickClickConfig): TextView {
-        val row = TextView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(32)
-            ).apply { topMargin = dp(4) }
-            text = cfg.name
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            isSingleLine = true   // 名称已限长（中文≤3、英文/数字≤4），完整展示不用省略号
-            background = getDrawableCompat(R.drawable.bg_floating_button)
-            setPadding(dp(6), dp(6), dp(6), dp(6))
-            tag = cfg
-        }
-        if (isEditing) {
-            row.setOnTouchListener { v, event -> handleChildDragTouch(v, event) }
-        } else {
-            row.setOnClickListener { onChildClicked(cfg) }
-        }
-        return row
-    }
-
-    private fun getDrawableCompat(resId: Int) = resources.getDrawable(resId, theme)
-
     // ==================== 子按钮长按拖动排序 ====================
 
-    /** 编辑态子按钮触摸：长按（默认 500ms）进入拖动，未长按则忽略（编辑态不触发点击） */
-    private fun handleChildDragTouch(view: View, event: MotionEvent): Boolean = when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                dragStartRawX = event.rawX
-                dragStartRawY = event.rawY
-                dragMoved = false
-                dragActive = false
-                val loc = IntArray(2)
-                expandedControls.getLocationOnScreen(loc)
-                parentTopOnScreen = loc[1]
-                dragStartRunnable = Runnable {
-                    dragActive = true
-                    view.elevation = dp(6).toFloat()   // 拖动中的按钮浮起
-                }.also { dragHandler.postDelayed(it, ViewConfiguration.getLongPressTimeout().toLong()) }
-                true
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val dx = event.rawX - dragStartRawX
-                val dy = event.rawY - dragStartRawY
-                if (!dragActive && !dragMoved && dx * dx + dy * dy > touchSlop * touchSlop) {
-                    dragMoved = true                   // 一移动就取消长按/拖动判定
-                    dragStartRunnable?.let { dragHandler.removeCallbacks(it) }
-                }
-                if (dragActive) performChildDrag(view, event)
-                true
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                dragStartRunnable?.let { dragHandler.removeCallbacks(it) }
-                dragStartRunnable = null
-                if (dragActive) {
-                    view.translationY = 0f
-                    view.elevation = 0f
-                    syncConfigsFromViews()             // 落位后按视图顺序持久化
-                    rebuildExpanded()
-                    clampWindowY()
-                }
-                dragActive = false
-                dragMoved = false
-                true
-            }
-            else -> false
+    /**
+     * 编辑态子按钮触摸（由 Compose pointerInteropFilter 回调）：
+     * 长按（默认 500ms）进入拖动，未长按则忽略（编辑态不触发点击）。
+     * 与原实现的区别：排序结果直接写回 ui.configs（原先是移动子 View 后再回写），
+     * 因此不再需要 syncConfigsFromViews()。
+     */
+    private fun onChildTouch(index: Int, event: MotionEvent): Boolean = when (event.actionMasked) {
+        MotionEvent.ACTION_DOWN -> {
+            dragStartRawX = event.rawX
+            dragStartRawY = event.rawY
+            dragMoved = false
+            dragActive = false
+            dragIndex = index
+            ui.pressedChildIndex = index                                  // 按下反馈
+            // 展开区顶部的屏幕绝对坐标 = 窗口 y + 展开区在根视图内的偏移
+            parentTopOnScreen = lp.y + expandedTopInRoot.toInt()
+            dragStartRunnable = Runnable {
+                dragActive = true
+                ui.draggingConfig = configs.getOrNull(index)               // 拖动中的按钮浮起
+                ui.dragOffsetY = 0f
+            }.also { dragHandler.postDelayed(it, ViewConfiguration.getLongPressTimeout().toLong()) }
+            true
         }
+        MotionEvent.ACTION_MOVE -> {
+            val dx = event.rawX - dragStartRawX
+            val dy = event.rawY - dragStartRawY
+            if (!dragActive && !dragMoved && dx * dx + dy * dy > touchSlop * touchSlop) {
+                dragMoved = true                   // 一移动就取消长按/拖动判定
+                ui.pressedChildIndex = -1
+                dragStartRunnable?.let { dragHandler.removeCallbacks(it) }
+            }
+            if (dragActive) performChildDrag(event)
+            true
+        }
+        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            dragStartRunnable?.let { dragHandler.removeCallbacks(it) }
+            dragStartRunnable = null
+            ui.pressedChildIndex = -1
+            if (dragActive) {
+                ui.dragOffsetY = 0f
+                ui.draggingConfig = null
+                clampWindowY()                     // 落位后校正窗口位置（列表顺序已同步）
+            }
+            dragActive = false
+            dragMoved = false
+            dragIndex = -1
+            true
+        }
+        else -> false
+    }
 
     /**
      * 拖动排序核心：子按钮跟随手指上下移动，中心越过相邻子按钮时交换位置；
-     * 只在 +（索引 0）和 -（倒数第 3）之间的子按钮区间内移动
+     * 子按钮区间即为 configs 全部元素（UI 上它们始终位于 + 和 - 之间）
      */
-    private fun performChildDrag(view: View, event: MotionEvent) {
-        val parent = expandedControls
-        val first = 1                      // 索引 0 是 “+”
-        val last = parent.childCount - 4   // 倒数 3 个是 “-”“设置”“取消”
-        if (last < first) return
-        val idx = parent.indexOfChild(view)
-        if (idx < first || idx > last) return
+    private fun performChildDrag(event: MotionEvent) {
+        val idx = dragIndex
+        if (idx < 0 || idx >= configs.size) return
 
         val dy = event.rawY - dragStartRawY
-        view.translationY = dy
+        ui.dragOffsetY = dy                    // 跟手位移
 
-        // 手指相对父容器的 Y 坐标（屏幕绝对坐标换算，防多窗口偏移）
-        val fingerY = event.rawY - parentTopOnScreen
+        val fingerY = event.rawY - parentTopOnScreen   // 手指相对展开区顶部的 Y
+        val rowPx = dp(44)                     // 每行占位：40dp 高度 + 4dp 上间距
+        val rowCenter = dp(24)                 // 行内容中心 = 行顶 + 4dp 间距 + 20dp 半高
 
-        if (idx > first) {
-            val above = parent.getChildAt(idx - 1)
-            if (fingerY < above.top + above.height / 2f) {
-                parent.removeView(view)
-                parent.addView(view, idx - 1)
-                view.translationY = dy + dp(36)   // 上移一格后补偿，保持视图跟手
-                return
-            }
+        if (idx > 0 && fingerY < (idx - 1) * rowPx + rowCenter) {
+            // 越过上一行中心：上移一格，并补偿位移保持视图跟手
+            val item = configs.removeAt(idx)
+            configs.add(idx - 1, item)
+            dragIndex = idx - 1
+            ui.dragOffsetY = dy + rowPx
+            return
         }
-        if (idx < last) {
-            val below = parent.getChildAt(idx + 1)
-            if (fingerY > below.top + below.height / 2f) {
-                parent.removeView(view)
-                parent.addView(view, idx + 1)
-                view.translationY = dy - dp(36)   // 下移一格后补偿，保持视图跟手
-                return
-            }
+        if (idx < configs.size - 1 && fingerY > (idx + 1) * rowPx + rowCenter) {
+            // 越过下一行中心：下移一格，并补偿位移保持视图跟手
+            val item = configs.removeAt(idx)
+            configs.add(idx + 1, item)
+            dragIndex = idx + 1
+            ui.dragOffsetY = dy - rowPx
         }
-    }
-
-    /** 拖动落位：按 expandedControls 中子按钮的当前顺序回写配置并持久化 */
-    private fun syncConfigsFromViews() {
-        val parent = expandedControls
-        val first = 1
-        val last = parent.childCount - 4
-        if (last < first) return
-        val ordered = mutableListOf<QuickClickConfig>()
-        for (i in first..last) {
-            (parent.getChildAt(i).tag as? QuickClickConfig)?.let { ordered.add(it) }
-        }
-        configs.clear()
-        configs.addAll(ordered)
     }
 
     // ==================== 识别 → 点击链路 ====================
 
     /** 子按钮点击：防抖 → 文本匹配 → dispatchGesture 点击 */
     private fun onChildClicked(cfg: QuickClickConfig) {
-        if (isEditing) return   // 编辑态不触发识别/点击
+        if (ui.isEditing) return   // 编辑态不触发识别/点击
 
         // 防抖：间隔内不重复执行同一按钮（间隔可在“设置”中调整）
         val now = System.currentTimeMillis()
@@ -544,7 +488,7 @@ class QuickClickService : Service() {
 
     /** 无障碍断连时总按钮变灰（半透明） */
     private fun setMainAvailable(available: Boolean) {
-        btnMain.alpha = if (available) 1f else 0.4f
+        ui.mainAlpha = if (available) 1f else 0.4f
     }
 
     // ==================== “+”新建配置弹框 ====================
@@ -552,30 +496,43 @@ class QuickClickService : Service() {
     /** “+”弹框：填写必要设置 → 点“新建”→ 实体化到 + 和 - 之间 */
     private fun showConfigDialog() {
         try {
-            val view = LayoutInflater.from(this).inflate(R.layout.dialog_quick_click_config, null)
-            val etName = view.findViewById<EditText>(R.id.etQuickName)
-            val etText = view.findViewById<EditText>(R.id.etQuickText)
-            val swAuto = view.findViewById<CheckBox>(R.id.swQuickAutoCollapse)
-            // 名称限长：含中文 ≤3 字、纯英文/数字 ≤4 字符，保证按钮上完整显示
-            etName.filters = arrayOf(QUICK_NAME_FILTER)
+            // === 原：inflate(dialog_quick_click_config.xml) + findViewById 取值 ===
+            // === 现：ComposeView + QuickConfigDialogContent，取值改为读写表单状态 ===
+            val form = QuickConfigFormState()
+            val host = ServiceComposeHost()
+            val content = ComposeView(this)
+            host.attach(content)
+            content.setContent {
+                AutoClickerTheme {
+                    QuickConfigDialogContent(
+                        state = form,
+                        nameFilter = ::limitQuickName,   // 名称限长：含中文 ≤2 字、纯英文/数字 ≤3 字符
+                    )
+                }
+            }
 
             val dialog = AlertDialog.Builder(this)
                 .setTitle("新建快捷按钮")
-                .setView(view)
+                .setView(content)
                 .setPositiveButton("新建", null)
                 .setNegativeButton("取消", null)
                 .create()
 
+            // 关键：把宿主 Owner 也挂到对话框窗口的 DecorView 上，且必须在 show() 之前。
+            // 对话框内 ComposeView 的窗口 Recomposer 是从 AlertDialogLayout 往上找 Owner 的，
+            // Service 场景没人给 DecorView 挂 Owner，漏掉这步会在弹框时崩。
+            dialog.window?.decorView?.let { host.attachWindowRoot(it) }
+
             dialog.setOnShowListener {
                 // 手动接管新建按钮：校验不通过时不关闭弹窗
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                    val text = etText.text.toString().trim()
+                    val text = form.targetText.trim()
                     if (text.isEmpty()) {
                         Toast.makeText(this, "请输入目标文字", Toast.LENGTH_SHORT).show()
                         return@setOnClickListener
                     }
                     val name = limitQuickName(
-                        etName.text.toString().trim().ifEmpty { "按钮${configs.size + 1}" }
+                        form.name.trim().ifEmpty { "按钮${configs.size + 1}" }
                     )
                     // 新按钮插到列表末尾：编辑态视图中即位于 + 和 - 之间
                     configs.add(
@@ -583,15 +540,15 @@ class QuickClickService : Service() {
                             name = name,
                             type = QuickClickConfig.TYPE_TEXT,
                             text = text,
-                            autoCollapse = swAuto.isChecked
+                            autoCollapse = form.autoCollapse
                         )
                     )
-                    rebuildExpanded()
                     clampWindowY()
                     Toast.makeText(this, "已新建「$name」", Toast.LENGTH_SHORT).show()
                     dialog.dismiss()
                 }
             }
+            dialog.setOnDismissListener { host.destroy() }
             // Service 弹窗必须挂到悬浮窗层，否则 BadTokenException（与旧功能处理一致）
             dialog.window?.setType(
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
@@ -619,48 +576,40 @@ class QuickClickService : Service() {
      */
     private fun showScriptManagerDialog() {
         try {
-            val view = LayoutInflater.from(this).inflate(R.layout.dialog_script_manager, null)
-            val btnSaveAs = view.findViewById<Button>(R.id.btnQuickSaveAs)
-            val tvEmpty = view.findViewById<TextView>(R.id.tvQuickScriptEmpty)
-            val listBox = view.findViewById<LinearLayout>(R.id.llQuickScriptList)
+            // === 原：inflate(dialog_script_manager.xml) + buildScriptRow 动态添加行 ===
+            // === 现：ComposeView + ScriptManagerDialogContent，列表由状态驱动 ===
+            val state = ScriptManagerState()
+            val host = ServiceComposeHost()
+            val content = ComposeView(this)
+            host.attach(content)
 
             val dialog = AlertDialog.Builder(this)
                 .setTitle("脚本管理")
-                .setView(view)
+                .setView(content)
                 .setNegativeButton("关闭", null)
                 .create()
 
-            fun refresh() {
-                listBox.removeAllViews()
-                val scripts = QuickClickStore.loadScripts(this)
-                tvEmpty.visibility = if (scripts.isEmpty()) View.VISIBLE else View.GONE
-                scripts.forEach { listBox.addView(buildScriptRow(it, dialog) { refresh() }) }
+            // 把宿主 Owner 也挂到对话框窗口的 DecorView 上（必须在 show() 之前，原因见 ServiceComposeHost.attachWindowRoot）
+            dialog.window?.decorView?.let { host.attachWindowRoot(it) }
+
+            // 重新读取脚本列表 → 触发 Compose 刷新（等价原来的 removeAllViews + 逐行 addView）
+            val refresh: () -> Unit = {
+                state.scripts = QuickClickStore.loadScripts(this)
             }
 
-            btnSaveAs.setOnClickListener {
-                if (configs.isEmpty()) {
-                    Toast.makeText(this, "当前没有按钮，请先添加", Toast.LENGTH_SHORT).show()
-                } else {
-                    // 从脚本加载来的按钮，预填该脚本名（可改可直接保存）
-                    showInputDialog("保存脚本", currentScriptName ?: "", "输入脚本名称", 12) { scriptName ->
-                        if (QuickClickStore.loadScripts(this).any { it.name == scriptName }) {
-                            // 名称已存在：确认是否覆盖
-                            confirmOverwrite(scriptName) {
-                                QuickClickStore.saveScript(this, scriptName, configs)
-                                currentScriptName = scriptName
-                                Toast.makeText(this, "已覆盖脚本「$scriptName」", Toast.LENGTH_SHORT).show()
-                                refresh()
-                            }
-                        } else {
-                            QuickClickStore.saveScript(this, scriptName, configs)
-                            currentScriptName = scriptName
-                            Toast.makeText(this, "已保存脚本「$scriptName」", Toast.LENGTH_SHORT).show()
-                            refresh()
-                        }
-                    }
+            content.setContent {
+                AutoClickerTheme {
+                    ScriptManagerDialogContent(
+                        state = state,
+                        onSaveCurrent = { saveCurrentScript(refresh) },
+                        onLoadScript = { script -> handleLoadScript(script, dialog, refresh) },
+                        onRenameScript = { script -> handleRenameScript(script, refresh) },
+                        onDeleteScript = { script -> handleDeleteScript(script, refresh) },
+                    )
                 }
             }
 
+            dialog.setOnDismissListener { host.destroy() }
             refresh()
             showOverlayDialog(dialog)
         } catch (e: Exception) {
@@ -668,74 +617,68 @@ class QuickClickService : Service() {
         }
     }
 
-    /** 脚本列表行：点名称加载；右侧「改名」「删除」 */
-    private fun buildScriptRow(script: QuickScript, dialog: AlertDialog, onChanged: () -> Unit): View {
-        val nameView = TextView(this).apply {
-            text = script.name
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            setTextColor(getColor(R.color.text_primary))
-            textSize = 15f
-            isSingleLine = true
-            setPadding(dp(4), 0, 0, 0)
+    /** 「保存当前按钮」：把内存中的按钮列表存成命名脚本（同名则先确认覆盖） */
+    private fun saveCurrentScript(onChanged: () -> Unit) {
+        if (configs.isEmpty()) {
+            Toast.makeText(this, "当前没有按钮，请先添加", Toast.LENGTH_SHORT).show()
+            return
         }
-        val btnRename = TextView(this).apply {
-            text = "改名"
-            setTextColor(getColor(R.color.primary))
-            textSize = 14f
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-        }
-        val btnDelete = TextView(this).apply {
-            text = "删除"
-            setTextColor(getColor(R.color.danger))
-            textSize = 14f
-            setPadding(dp(12), dp(6), dp(4), dp(6))
-        }
-
-        // 点名称 = 加载/切换：用脚本内容替换当前悬浮框上的按钮
-        nameView.setOnClickListener {
-            when {
-                script.configs.isEmpty() ->
-                    Toast.makeText(this, "脚本「${script.name}」没有按钮", Toast.LENGTH_SHORT).show()
-                // 悬浮框上已有按钮：先确认覆盖，避免未保存的节点被直接替换掉
-                configs.isNotEmpty() -> confirmReplaceByScript(script, dialog)
-                else -> loadScript(script, dialog)
+        // 从脚本加载来的按钮，预填该脚本名（可改可直接保存）
+        showInputDialog("保存脚本", currentScriptName ?: "", "输入脚本名称", 12) { scriptName ->
+            if (QuickClickStore.loadScripts(this).any { it.name == scriptName }) {
+                // 名称已存在：确认是否覆盖
+                confirmOverwrite(scriptName) {
+                    QuickClickStore.saveScript(this, scriptName, configs)
+                    currentScriptName = scriptName
+                    Toast.makeText(this, "已覆盖脚本「$scriptName」", Toast.LENGTH_SHORT).show()
+                    onChanged()
+                }
+            } else {
+                QuickClickStore.saveScript(this, scriptName, configs)
+                currentScriptName = scriptName
+                Toast.makeText(this, "已保存脚本「$scriptName」", Toast.LENGTH_SHORT).show()
+                onChanged()
             }
         }
-        btnRename.setOnClickListener {
-            showInputDialog("重命名脚本", script.name, "输入新名称", 12) { newName ->
-                if (QuickClickStore.renameScript(this, script.name, newName)) {
-                    if (currentScriptName == script.name) currentScriptName = newName
-                    onChanged()
-                    Toast.makeText(this, "已重命名为「$newName」", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, "脚本名「$newName」已存在", Toast.LENGTH_SHORT).show()
-                }
+    }
+
+    /** 点击脚本名称：加载/切换；悬浮框上已有按钮时先确认覆盖 */
+    private fun handleLoadScript(script: QuickScript, dialog: AlertDialog, onChanged: () -> Unit) {
+        when {
+            script.configs.isEmpty() ->
+                Toast.makeText(this, "脚本「${script.name}」没有按钮", Toast.LENGTH_SHORT).show()
+            // 悬浮框上已有按钮：先确认覆盖，避免未保存的节点被直接替换掉
+            configs.isNotEmpty() -> confirmReplaceByScript(script, dialog)
+            else -> loadScript(script, dialog)
+        }
+    }
+
+    /** 「改名」：重命名脚本（新名已存在则提示） */
+    private fun handleRenameScript(script: QuickScript, onChanged: () -> Unit) {
+        showInputDialog("重命名脚本", script.name, "输入新名称", 12) { newName ->
+            if (QuickClickStore.renameScript(this, script.name, newName)) {
+                if (currentScriptName == script.name) currentScriptName = newName
+                onChanged()
+                Toast.makeText(this, "已重命名为「$newName」", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "脚本名「$newName」已存在", Toast.LENGTH_SHORT).show()
             }
         }
-        btnDelete.setOnClickListener {
-            AlertDialog.Builder(this)
-                .setTitle("删除脚本")
-                .setMessage("确定删除脚本「${script.name}」？")
-                .setPositiveButton("删除") { _, _ ->
-                    QuickClickStore.deleteScript(this, script.name)
-                    onChanged()
-                    Toast.makeText(this, "已删除脚本「${script.name}」", Toast.LENGTH_SHORT).show()
-                }
-                .setNegativeButton("取消", null)
-                .create()
-                .also { showOverlayDialog(it) }
-        }
+    }
 
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)
-            )
-            addView(nameView)
-            addView(btnRename)
-            addView(btnDelete)
-        }
+    /** 「删除」：确认后删除脚本 */
+    private fun handleDeleteScript(script: QuickScript, onChanged: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle("删除脚本")
+            .setMessage("确定删除脚本「${script.name}」？")
+            .setPositiveButton("删除") { _, _ ->
+                QuickClickStore.deleteScript(this, script.name)
+                onChanged()
+                Toast.makeText(this, "已删除脚本「${script.name}」", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("取消", null)
+            .create()
+            .also { showOverlayDialog(it) }
     }
 
     /** 载入脚本：替换悬浮框上的按钮，并关闭脚本管理弹框 */
@@ -743,7 +686,6 @@ class QuickClickService : Service() {
         configs.clear()
         configs.addAll(script.configs)
         currentScriptName = script.name
-        rebuildExpanded()
         clampWindowY()
         dialog.dismiss()
         Toast.makeText(this, "已加载脚本「${script.name}」", Toast.LENGTH_SHORT).show()
@@ -790,7 +732,10 @@ class QuickClickService : Service() {
         )
     }
 
-    /** 单行输入弹框（另存为 / 重命名共用） */
+    /**
+     * 单行输入弹框（保存脚本 / 重命名共用）。
+     * 此处仍用原生 EditText：该弹框不涉及 XML 布局文件，且原生输入框在该场景下更稳。
+     */
     private fun showInputDialog(
         title: String,
         initial: String,
@@ -861,6 +806,7 @@ class QuickClickService : Service() {
 
     /** 展开区在主按钮下方，展开/编辑后校正窗口位置避免超出屏幕底部 */
     private fun clampWindowY() {
+        // Compose 内容尺寸变化后需等一次布局完成才能拿到新高度，故 post 到下一帧读取
         root.post {
             if (!rootAdded) return@post
             val maxY = (getScreenHeight() - root.height).coerceAtLeast(0)

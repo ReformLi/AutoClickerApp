@@ -2,7 +2,6 @@ package com.hpu.autoclicker
 
 import android.accessibilityservice.AccessibilityService
 import android.app.AlertDialog
-import android.app.Dialog
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -22,24 +21,24 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
-import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.ImageView
-import android.widget.LinearLayout
+import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
-import android.widget.Button
-import android.widget.CompoundButton
-import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
-import android.widget.ScrollView
-import androidx.annotation.NonNull
+import androidx.compose.ui.platform.ComposeView
 import androidx.core.content.ContextCompat
+import androidx.core.view.doOnLayout
+import com.hpu.autoclicker.ui.FloatingServiceContent
+import com.hpu.autoclicker.ui.FloatingServiceUiState
+import com.hpu.autoclicker.ui.PointSettingsDialogContent
+import com.hpu.autoclicker.ui.PointSettingsFormState
+import com.hpu.autoclicker.ui.ServiceComposeHost
+import com.hpu.autoclicker.ui.SettingsDialogContent
+import com.hpu.autoclicker.ui.SettingsDialogState
+import com.hpu.autoclicker.ui.theme.AutoClickerTheme
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -58,14 +57,19 @@ class FloatingWindowService : Service() {
     // WindowManager 用于管理悬浮窗的显示、位置和参数
     private lateinit var windowManager: WindowManager
 
-    // 悬浮窗的根布局（包含主按钮和展开的操作按钮区域）
-    private lateinit var rootView: LinearLayout
+    // 悬浮窗的根布局（由原 activity_floating_window_service.xml 迁移为 Compose 内容）
+    private lateinit var rootView: ComposeView
 
-    // 可展开/折叠的操作按钮区域
-    private lateinit var expandedControls: LinearLayout
+    /** ComposeView 在 Service 中所需的生命周期宿主（缺失会抛 ViewTreeLifecycleOwner not found） */
+    private val composeHost = ServiceComposeHost()
 
-    // 主悬浮按钮（可拖动、可点击展开）
-    private lateinit var btnMain: ImageView
+    /** 悬浮窗 UI 状态：展开/运行/隐藏，替代原来 findViewById + isEnabled/setImageResource 的手工刷新 */
+    private val ui = FloatingServiceUiState()
+
+    // 主按钮 / 退出按钮在「窗口内」的位置（屏幕坐标 = 窗口内坐标 + layoutParams 偏移）
+    // 用于运行期判断触摸是否落在允许的按钮上（等价原 findViewById + getLocationOnScreen）
+    private var mainBtnWindowRect = Rect()
+    private var exitBtnWindowRect = Rect()
 
     // 悬浮窗的布局参数（位置、大小、类型等）
     private lateinit var layoutParams: WindowManager.LayoutParams
@@ -98,8 +102,10 @@ class FloatingWindowService : Service() {
 
     private var pointSizePx = 0
 
-    // 运行状态
-    private var isRunning = false
+    // 运行状态（读写统一落到 ui 状态，UI 自动刷新启动/停止图标与按钮可用性）
+    private var isRunning: Boolean
+        get() = ui.isRunning
+        set(value) { ui.isRunning = value }
     private val runHandler = Handler(Looper.getMainLooper())
 
     private var pairCount = 0
@@ -111,7 +117,10 @@ class FloatingWindowService : Service() {
     private var settingsDialog: AlertDialog? = null
     private var maxLoopCount = 0   // 0或负数表示无限循环，>0 为固定次数
 
-    private var isHidden = false   // 隐藏状态
+    // 隐藏状态（读写统一落到 ui 状态，UI 自动刷新隐藏/显示图标与按钮可用性）
+    private var isHidden: Boolean
+        get() = ui.isHidden
+        set(value) { ui.isHidden = value }
 
     override fun onCreate() {
         super.onCreate()
@@ -120,17 +129,29 @@ class FloatingWindowService : Service() {
         // 获取 WindowManager 系统服务
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
-        // 加载自定义的悬浮窗布局（注意：之前的代码中文件名可能为 activity_floating_window_service，
-        // 务必确认布局文件实际名称与 R.layout.xxx 一致，推荐改为 R.layout.floating_window_layout）
-        rootView = LayoutInflater.from(this)
-            .inflate(R.layout.activity_floating_window_service, null) as LinearLayout
-
-        // 获取布局中的控件
-        expandedControls = rootView.findViewById(R.id.expandedControls)
-        btnMain = rootView.findViewById(R.id.btnMain)
-
-        // 设置触摸监听和按钮点击事件
-        setupTouchAndClick()
+        // === 原：LayoutInflater.inflate(R.layout.activity_floating_window_service) ===
+        // === 现：ComposeView + Compose 内容（FloatingServiceContent） ===
+        rootView = ComposeView(this)
+        composeHost.attach(rootView)   // 注入生命周期宿主，否则 setContent 会抛异常
+        // 主按钮触摸状态机 + 7 个操作按钮的回调（等价原 setupTouchAndClick 里的 findViewById 绑定）
+        rootView.setContent {
+            AutoClickerTheme {
+                FloatingServiceContent(
+                    state = ui,
+                    onMainTouch = { event -> onMainTouch(event) },
+                    onStart = { if (isRunning) stopRunning() else startRunning() },
+                    onAdd = { addClickPoint(-1, true) },   // isStart:随意
+                    onSlide = { addSwipePair() },
+                    onReduce = { removeLastClickPoint() },
+                    onSettings = { showGlobalSettingsDialog() },
+                    onHide = { toggleHide() },
+                    onExit = { stopSelf() },
+                    // 上报按钮在窗口内的位置，供运行期「触摸是否落在允许按钮上」的判定使用
+                    onMainBounds = { rect -> mainBtnWindowRect = rect },
+                    onExitBounds = { rect -> exitBtnWindowRect = rect },
+                )
+            }
+        }
 
         // 配置悬浮窗的布局参数
         layoutParams = WindowManager.LayoutParams(
@@ -152,11 +173,10 @@ class FloatingWindowService : Service() {
             PixelFormat.TRANSLUCENT  // 半透明像素格式（实际背景由布局决定）
         )
 
-        // 提前测量布局，以获得正确的宽高（避免后续 post 测量为 0）
-        rootView.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
-        val w = rootView.measuredWidth
-        val h = rootView.measuredHeight
-        Log.d("FloatingWindow", "布局测量完成：宽=$w, 高=$h")
+        // Compose 内容在 addView 之前无法测量，折叠态高度固定为「8dp 间距 + 40dp 主按钮 + 8dp 间距」= 56dp，
+        // 用它估算初始居中位置（后续布局完成后再由 toggleExpanded/snapToEdge 校正）
+        val h = (56 * resources.displayMetrics.density).toInt()
+        Log.d("FloatingWindow", "初始高度估算：高=$h")
 
         // 设置初始位置：左侧吸附，垂直居中
         layoutParams.gravity = Gravity.START or Gravity.TOP  // 以屏幕左上角为原点
@@ -252,6 +272,7 @@ class FloatingWindowService : Service() {
         pointSettingsDialog?.dismiss()
         pointSettingsDialog = null
 
+        composeHost.destroy()   // 释放 ComposeView 的生命周期宿主
         unregisterReceiver(configReceiver)
         super.onDestroy()
     }
@@ -269,108 +290,76 @@ class FloatingWindowService : Service() {
     }
 
     /**
-     * 设置主按钮的触摸监听（按住拖动 + 点击展开）和其他按钮的点击事件
+     * 主按钮触摸监听（按住拖动 + 点击展开）。
+     * 由 Compose 的 pointerInteropFilter 回调进来，坐标同为屏幕绝对坐标；
+     * 7 个操作按钮的点击回调已在 onCreate 的 setContent 中绑定。
      */
-    private fun setupTouchAndClick() {
-        // 主按钮触摸监听：按住拖动 + 点击展开
-        btnMain.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    // 记录按下时的位置和窗口坐标，准备拖动
-                    initialX = event.rawX
-                    initialY = event.rawY
-                    initialWindowX = layoutParams.x
-                    initialWindowY = layoutParams.y
-                    isDragging = false   // 重置拖动状态
-                    true  // 必须返回 true，否则后续事件收不到
-                }
-
-                MotionEvent.ACTION_MOVE -> {
-                    // 计算手指移动的距离
-                    val dx = event.rawX - initialX
-                    val dy = event.rawY - initialY
-
-                    // 移动超过 10 像素时，进入拖动模式
-                    if (!isDragging && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
-                        isDragging = true
-                    }
-                    if (isDragging) {
-                        // 更新窗口位置
-                        layoutParams.x = initialWindowX + dx.toInt()
-                        layoutParams.y = initialWindowY + dy.toInt()
-                        // 垂直边界限制，防止移出屏幕（顶部 0 到底部 screenHeight - 视图高度）
-                        layoutParams.y = layoutParams.y.coerceIn(0, getScreenHeight() - rootView.height)
-                        // 应用新位置
-                        windowManager.updateViewLayout(rootView, layoutParams)
-                    }
-                    true
-                }
-
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (isDragging) {
-                        // 拖动结束，吸附到左侧或右侧边缘
-                        snapToEdge()
-                    } else {
-                        // 没有拖动，视为点击，切换展开/折叠
-                        toggleExpanded()
-                    }
-                    isDragging = false
-                    true
-                }
-
-                else -> false
+    private fun onMainTouch(event: MotionEvent): Boolean {
+        return when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                // 记录按下时的位置和窗口坐标，准备拖动
+                initialX = event.rawX
+                initialY = event.rawY
+                initialWindowX = layoutParams.x
+                initialWindowY = layoutParams.y
+                isDragging = false   // 重置拖动状态
+                ui.mainPressed = true   // 按下反馈（等价原 bg_floating_button 的 pressed 态）
+                true  // 必须返回 true，否则后续事件收不到
             }
-        }
 
-        // 示例：退出按钮的点击事件，点击后关闭悬浮窗服务
-        rootView.findViewById<ImageView>(R.id.btnExit).setOnClickListener {
-            stopSelf()
-        }
+            MotionEvent.ACTION_MOVE -> {
+                // 计算手指移动的距离
+                val dx = event.rawX - initialX
+                val dy = event.rawY - initialY
 
-        //绑定添加按钮的点击事件
-        rootView.findViewById<ImageView>(R.id.btnAdd).setOnClickListener {
-            addClickPoint(-1,true)//isStart:随意
-        }
-        // 绑定减少按钮：删除最后一个添加的点击点
-        rootView.findViewById<ImageView>(R.id.btnReduce).setOnClickListener {
-            removeLastClickPoint()
-        }
-        // 绑定启动/停止按钮
-        rootView.findViewById<ImageView>(R.id.btnStart).setOnClickListener {
-            if (isRunning) {
-                stopRunning()
-            } else {
-                startRunning()
+                // 移动超过 10 像素时，进入拖动模式
+                if (!isDragging && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
+                    isDragging = true
+                    ui.mainPressed = false
+                }
+                if (isDragging) {
+                    // 更新窗口位置
+                    layoutParams.x = initialWindowX + dx.toInt()
+                    layoutParams.y = initialWindowY + dy.toInt()
+                    // 垂直边界限制，防止移出屏幕（顶部 0 到底部 screenHeight - 视图高度）
+                    layoutParams.y = layoutParams.y.coerceIn(0, getScreenHeight() - rootView.height)
+                    // 应用新位置
+                    windowManager.updateViewLayout(rootView, layoutParams)
+                }
+                true
             }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                ui.mainPressed = false
+                if (isDragging) {
+                    // 拖动结束，吸附到左侧或右侧边缘
+                    snapToEdge()
+                } else {
+                    // 没有拖动，视为点击，切换展开/折叠
+                    toggleExpanded()
+                }
+                isDragging = false
+                true
+            }
+
+            else -> false
         }
-        // 绑定滑动按钮
-        rootView.findViewById<ImageView>(R.id.btnSlide).setOnClickListener {
-            addSwipePair()
-        }
-        // 绑定设置按钮
-        rootView.findViewById<ImageView>(R.id.btnSettings).setOnClickListener {
-            showGlobalSettingsDialog()
-        }
-        // 绑定隐藏按钮
-        rootView.findViewById<ImageView>(R.id.btnHide).setOnClickListener {
-            toggleHide()
-        }
-        // 你可以在这里继续绑定其他按钮（如 btnStart、btnAdd 等）的点击功能
     }
 
     /**
      * 切换操作栏的展开/折叠状态，并重新校正悬浮窗位置确保不超出屏幕
      */
     private fun toggleExpanded() {
-        // 切换可见性
-        if (expandedControls.visibility == View.GONE) {
-            expandedControls.visibility = View.VISIBLE
-        } else {
-            expandedControls.visibility = View.GONE
+        // 切换展开/折叠（原为切换 expandedControls 的 visibility，现由 Compose 状态驱动）
+        ui.isExpanded = !ui.isExpanded
+        if (!ui.isExpanded) {
+            // 折叠后退出按钮不再显示，其位置信息作废，避免运行期触摸判定误命中
+            exitBtnWindowRect = Rect()
         }
 
-        // 视图大小改变后，重新测量并更新布局
-        rootView.post {
+        // 视图大小改变后，重新测量并更新布局。
+        // Compose 内容尺寸变化会触发一次布局，故用 doOnLayout 等布局完成后再校正窗口位置/尺寸。
+        rootView.doOnLayout {
             // 通知窗口管理器更新视图（尺寸可能变化）
             windowManager.updateViewLayout(rootView, layoutParams)
 
@@ -683,32 +672,39 @@ class FloatingWindowService : Service() {
     private fun showGlobalSettingsDialog() {
         settingsDialog?.dismiss()
 
-        val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_settings, null)
-        val etLoopCount = dialogView.findViewById<EditText>(R.id.etLoopCount)
-        val btnSavePoints = dialogView.findViewById<Button>(R.id.btnSavePoints)
-        val btnLoadPoints = dialogView.findViewById<Button>(R.id.btnLoadPoints)
-        val btnCancel = dialogView.findViewById<Button>(R.id.btnCancelSettings)
-        val btnConfirm = dialogView.findViewById<Button>(R.id.btnConfirmSettings)
-
-        // 显示当前循环数值
-        etLoopCount.setText(if (maxLoopCount <= 0) "" else maxLoopCount.toString())
-
-        btnSavePoints.setOnClickListener { savePointsToFile(); settingsDialog?.dismiss() }
-        btnLoadPoints.setOnClickListener { loadPointsFromFile(); settingsDialog?.dismiss() }
-        // 取消：直接关闭
-        btnCancel.setOnClickListener { settingsDialog?.dismiss() }
-
-        // 确定：保存循环值后关闭
-        btnConfirm.setOnClickListener {
-            val input = etLoopCount.text.toString()
-            maxLoopCount = input.toIntOrNull() ?: 0
-            if (maxLoopCount < 0) maxLoopCount = 0
-            Toast.makeText(this, "循环次数已更新", Toast.LENGTH_SHORT).show()
-            settingsDialog?.dismiss()
+        // === 原：inflate(dialog_settings.xml) + findViewById 各控件 ===
+        // === 现：ComposeView + SettingsDialogContent（表单值存于 SettingsDialogState） ===
+        val form = SettingsDialogState().apply {
+            // 显示当前循环数值
+            loopCount = if (maxLoopCount <= 0) "" else maxLoopCount.toString()
+        }
+        val host = ServiceComposeHost()
+        val content = ComposeView(this)
+        host.attach(content)
+        content.setContent {
+            AutoClickerTheme {
+                SettingsDialogContent(
+                    state = form,
+                    onSavePoints = { savePointsToFile(); settingsDialog?.dismiss() },
+                    onLoadPoints = { loadPointsFromFile(); settingsDialog?.dismiss() },
+                    // 取消：直接关闭
+                    onCancel = { settingsDialog?.dismiss() },
+                    // 确定：保存循环值后关闭
+                    onConfirm = {
+                        maxLoopCount = form.loopCount.toIntOrNull() ?: 0
+                        if (maxLoopCount < 0) maxLoopCount = 0
+                        Toast.makeText(this, "循环次数已更新", Toast.LENGTH_SHORT).show()
+                        settingsDialog?.dismiss()
+                    },
+                )
+            }
         }
 
-        val builder = AlertDialog.Builder(this).setView(dialogView).setCancelable(true)
+        val builder = AlertDialog.Builder(this).setView(content).setCancelable(true)
         settingsDialog = builder.create()
+
+        // 把宿主 Owner 也挂到对话框窗口的 DecorView 上（必须在 show() 之前，原因见 ServiceComposeHost.attachWindowRoot）
+        settingsDialog?.window?.decorView?.let { host.attachWindowRoot(it) }
 
         settingsDialog?.apply {
             window?.setType(
@@ -726,6 +722,7 @@ class FloatingWindowService : Service() {
             )
             window?.setBackgroundDrawableResource(android.R.color.transparent)
             setCanceledOnTouchOutside(true)
+            setOnDismissListener { host.destroy() }
             show()
         }
     }
@@ -849,10 +846,8 @@ class FloatingWindowService : Service() {
         isRunning = true
         // 悬浮窗半透明
         rootView.alpha = 0.5f
-        // 将其他按钮置灰（添加、减少、设置、滑动等）
-        setButtonsEnabled(false)
-        // 切换主按钮图标为停止
-        rootView.findViewById<ImageView>(R.id.btnStart).setImageResource(R.drawable.ic_stop)
+        // 将其他按钮置灰（添加、减少、设置、滑动、隐藏等）与启动图标切换为“停止”，
+        // 原为 setButtonsEnabled(false) + setImageResource(ic_stop)，现由 ui.isRunning 派生，Compose 自动刷新
 
         // 运行期间点击任何橙色圆形按钮（普通点或滑动点），连点不会停止，触摸完全穿透到背后应用
         rootView.setOnTouchListener { _, event ->
@@ -1059,8 +1054,8 @@ class FloatingWindowService : Service() {
         // 恢复透明度
         rootView.alpha = 1.0f
 
-        // 恢复其他按钮
-        setOtherButtonsEnabled(true)
+        // 恢复其他按钮（原 setOtherButtonsEnabled(true)，现由 ui.isRunning=false 派生）
+        // 启动图标恢复为“播放”同样由 ui.isRunning 派生自动完成
 
         // 移除空白区域触摸监听
         rootView.setOnTouchListener(null)
@@ -1083,58 +1078,20 @@ class FloatingWindowService : Service() {
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             windowManager.updateViewLayout(lineView, params)
         }
-
-        rootView.findViewById<ImageView>(R.id.btnStart).setImageResource(R.drawable.ic_play)
-    }
-
-    private fun setButtonsEnabled(enable: Boolean) {
-        val buttonsToDisable = listOf(
-            R.id.btnAdd,
-            R.id.btnReduce,
-            R.id.btnSettings,
-            R.id.btnSlide,   // 如果有
-            R.id.btnHide
-        )
-        for (id in buttonsToDisable) {
-            val btn = rootView.findViewById<View>(id)
-            btn.isEnabled = enable
-            btn.alpha = if (enable) 1.0f else 0.4f   // 置灰效果
-        }
-        // 启动按钮本身不在此处禁用，它由 isRunning 状态控制图标变化，但仍可点击（用于停止）
     }
 
     /**
-     * 判断触摸点是否落在允许的按钮上（主按钮、退出按钮）
+     * 判断触摸点是否落在允许的按钮上（主按钮、退出按钮）。
+     * 原实现用 findViewById + getLocationOnScreen；现按钮位置由 Compose 的
+     * onGloballyPositioned 上报「窗口内坐标」，加上窗口偏移即屏幕绝对坐标。
      */
     private fun isTouchOnAllowedButton(rawX: Int, rawY: Int): Boolean {
-        val allowedIds = listOf(R.id.btnMain, R.id.btnExit)
-        for (id in allowedIds) {
-            val btn = rootView.findViewById<View>(id)
-            val loc = IntArray(2)
-            btn.getLocationOnScreen(loc)
-            val rect = android.graphics.Rect(
-                loc[0], loc[1],
-                loc[0] + btn.width, loc[1] + btn.height
-            )
-            if (rect.contains(rawX, rawY)) return true
-        }
-        return false
-    }
-
-    /**
-     * 启用/禁用除主按钮、退出按钮以外的按钮
-     */
-    private fun setOtherButtonsEnabled(enable: Boolean) {
-
-        val idsToDisable = listOf(
-            R.id.btnStart, R.id.btnAdd, R.id.btnSlide,
-            R.id.btnReduce, R.id.btnSettings, R.id.btnHide
-        )
-        for (id in idsToDisable) {
-            val btn = rootView.findViewById<View>(id)
-            btn.isEnabled = enable
-            btn.alpha = if (enable) 1.0f else 0.4f   // 置灰效果
-        }
+        // 主按钮
+        val main = Rect(mainBtnWindowRect).apply { offset(layoutParams.x, layoutParams.y) }
+        if (main.contains(rawX, rawY)) return true
+        // 退出按钮
+        val exit = Rect(exitBtnWindowRect).apply { offset(layoutParams.x, layoutParams.y) }
+        return exit.contains(rawX, rawY)
     }
 
     /**
@@ -1143,124 +1100,42 @@ class FloatingWindowService : Service() {
     private fun showPointSettingsDialog(point: ClickPoint) {
         pointSettingsDialog?.dismiss()
 
-        // 加载设置布局
-        val dialogView = LayoutInflater.from(this).inflate(R.layout.activity_point_settings, null)
-
-        // 绑定控件（保持原有 bindViews 调用，或直接手动绑定）
-        val etName = dialogView.findViewById<EditText>(R.id.etName)
-//        val rgType = dialogView.findViewById<RadioGroup>(R.id.rgType)
-        val rbClick = dialogView.findViewById<RadioButton>(R.id.rbClick)
-        val rbDoubleClick = dialogView.findViewById<RadioButton>(R.id.rbDoubleClick)
-        val rbBack = dialogView.findViewById<RadioButton>(R.id.rbBack)
-        val rbHome = dialogView.findViewById<RadioButton>(R.id.rbHome)
-        val rbNotification = dialogView.findViewById<RadioButton>(R.id.rbNotification)
-//        val rbLongClick = dialogView.findViewById<RadioButton>(R.id.rbLongClick)
-        val rgPosition = dialogView.findViewById<RadioGroup>(R.id.rgPosition)
-        val etDelay = dialogView.findViewById<EditText>(R.id.etDelay)
-        val etTouchDuration = dialogView.findViewById<EditText>(R.id.etTouchDuration)
-        val etRepeatCount = dialogView.findViewById<EditText>(R.id.etRepeatCount)
-        val etRandomDistance = dialogView.findViewById<EditText>(R.id.etRandomDistance)
-
-        val btnSave = dialogView.findViewById<Button>(R.id.btnSave)
-        val btnCancel = dialogView.findViewById<Button>(R.id.btnCancel)
-
-        val rbSwipe = dialogView.findViewById<RadioButton>(R.id.rbSwipe)
-        val tvTouchDurationLabel = dialogView.findViewById<TextView>(R.id.tvTouchDurationLabel)
-
-        val allTypeButtons = listOf(rbClick, rbDoubleClick, rbBack, rbHome, rbNotification, rbSwipe)
-
-        // 定义共享的互斥监听器
-        val typeCheckedListener = CompoundButton.OnCheckedChangeListener { buttonView, isChecked ->
-            if (isChecked) {
-                // 取消其他所有按钮的选中状态
-                allTypeButtons.forEach { other ->
-                    if (other != buttonView) {
-                        other.isChecked = false
-                    }
-                }
+        // === 原：inflate(activity_point_settings.xml) + findViewById 各控件 + 互斥监听 ===
+        // === 现：ComposeView + PointSettingsDialogContent（表单值存于 PointSettingsFormState） ===
+        val form = PointSettingsFormState().apply {
+            // 填充数据
+            name = point.name
+            // 滑动点只显示「滑动」；普通点按 point.type 回填，未知类型回落为「点击」
+            type = when (point.type) {
+                "双击", "返回键", "主页键", "打开通知栏", "滑动" -> point.type
+                else -> "点击"
+            }
+            // 原实现未回填 clickPosition（该段代码被注释），此处保持 XML 默认选中「中间」
+            clickPosition = "中间"
+            delay = point.delay.toString()
+            touchDuration = point.touchDuration.toString()
+            repeatCount = point.repeatCount.toString()
+            randomDistance = point.randomDistance.toString()
+            isSwipePoint = point.pairId != -1
+        }
+        val host = ServiceComposeHost()
+        val content = ComposeView(this)
+        host.attach(content)
+        content.setContent {
+            AutoClickerTheme {
+                PointSettingsDialogContent(
+                    state = form,
+                    // 取消
+                    onCancel = { pointSettingsDialog?.dismiss() },
+                    // 保存
+                    onConfirm = { savePointSettings(point, form) },
+                )
             }
         }
-        // 为所有按钮绑定同一个监听器
-        allTypeButtons.forEach { it.setOnCheckedChangeListener(typeCheckedListener) }
-
-        // 填充数据（与之前相同）
-        etName.setText(point.name)
-
-        // 绑定监听器
-        allTypeButtons.forEach { it.setOnCheckedChangeListener(typeCheckedListener) }
-        if (point.pairId != -1) {
-            // 滑动点：隐藏其他按钮，只显示滑动
-            allTypeButtons.forEach { it.visibility = View.GONE }
-            rbSwipe.visibility = View.VISIBLE
-            rbSwipe.isChecked = true
-            rbSwipe.isEnabled = false   // 不可取消
-            tvTouchDurationLabel.text = "滑动持续时间（毫秒）"
-        } else {
-            // 普通点时隐藏滑动按钮
-            rbSwipe.visibility = View.GONE
-            // 显示其他所有按钮
-            allTypeButtons.forEach { it.visibility = View.VISIBLE }
-            when (point.type) {
-                "双击" -> rbDoubleClick.isChecked = true
-                "返回键" -> rbBack.isChecked = true
-                "主页键" -> rbHome.isChecked = true
-                "打开通知栏" -> rbNotification.isChecked = true
-                else -> rbClick.isChecked = true
-            }
-        }
-//        when (point.type) {
-//            "双击" -> rbDoubleClick.isChecked = true
-//            "返回键" -> rbBack.isChecked = true
-//            "主页键" -> rbHome.isChecked = true
-//            "打开通知栏" -> rbNotification.isChecked = true
-//            else -> rbClick.isChecked = true
-//        }
-//        when (point.clickPosition) {
-//            "随机" -> rgPosition.check(R.id.rbRandom)
-//            else -> rgPosition.check(R.id.rbCenter)
-//        }
-        etDelay.setText(point.delay.toString())
-        etTouchDuration.setText(point.touchDuration.toString())
-        etRepeatCount.setText(point.repeatCount.toString())
-        etRandomDistance.setText(point.randomDistance.toString())
-        // 取消
-        btnCancel.setOnClickListener {
-            pointSettingsDialog?.dismiss()
-        }
-        // 保存逻辑
-        btnSave.setOnClickListener {
-            point.name = etName.text.toString().ifBlank { "点 ${point.id}" }
-            point.delay = etDelay.text.toString().toLongOrNull() ?: 0
-            point.touchDuration = etTouchDuration.text.toString().toLongOrNull() ?: 300
-            point.repeatCount = etRepeatCount.text.toString().toIntOrNull() ?: 1
-            point.randomDistance = etRandomDistance.text.toString().toIntOrNull() ?: 0
-            if (point.pairId == -1) {
-                point.type = when {
-                    rbDoubleClick.isChecked -> "双击"
-                    rbBack.isChecked -> "返回键"
-                    rbHome.isChecked -> "主页键"
-                    rbNotification.isChecked -> "打开通知栏"
-                    else -> "点击"
-                }
-            }
-            // 滑动点的类型保持不变
-            point.clickPosition = if (rgPosition.checkedRadioButtonId == R.id.rbRandom) "随机" else "中间"
-
-            if (point.pairId != -1) {
-                clickPoints.filter { it.pairId == point.pairId }.forEach { p ->
-                    p.name = point.name
-                    p.delay = point.delay
-                    p.touchDuration = point.touchDuration
-                    p.repeatCount = point.repeatCount
-                    p.randomDistance = point.randomDistance
-                }
-            }
-            Toast.makeText(this, "设置已保存", Toast.LENGTH_SHORT).show()
-            pointSettingsDialog?.dismiss()
-        }
+        // 弹框内部区域吞掉触摸，避免落到外层容器的「点空白关闭」监听上（等价原 dialogView.isClickable = true）
+        content.setOnTouchListener { _, _ -> true }
 
         // 外层容器铺满屏幕，左右各保留 5% 空隙；点击上下左右空白区域等同于取消
-        dialogView.isClickable = true
         val wrapper = FrameLayout(this).apply {
             val metrics = resources.displayMetrics
             val padH = (metrics.widthPixels * 0.05).toInt()
@@ -1271,7 +1146,7 @@ class FloatingWindowService : Service() {
                 pointSettingsDialog?.dismiss()
             }
             addView(
-                dialogView,
+                content,
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1286,6 +1161,9 @@ class FloatingWindowService : Service() {
 
         pointSettingsDialog = builder.create()
 
+        // 把宿主 Owner 也挂到对话框窗口的 DecorView 上（必须在 show() 之前，原因见 ServiceComposeHost.attachWindowRoot）
+        pointSettingsDialog?.window?.decorView?.let { host.attachWindowRoot(it) }
+
         pointSettingsDialog?.apply {
             window?.setType(
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1298,6 +1176,7 @@ class FloatingWindowService : Service() {
             window?.setGravity(Gravity.CENTER)
             window?.setBackgroundDrawableResource(android.R.color.transparent)
             setCanceledOnTouchOutside(true)   // 点击外部空白关闭
+            setOnDismissListener { host.destroy() }
             show()
             // show 之后设置全屏窗口，外层 wrapper 的 padding 区域才能完整接收上下左右空白点击
             window?.setLayout(
@@ -1305,6 +1184,32 @@ class FloatingWindowService : Service() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
+    }
+
+    /** 点击点设置保存（原 btnSave.setOnClickListener 内的逻辑，逐条保留） */
+    private fun savePointSettings(point: ClickPoint, form: PointSettingsFormState) {
+        point.name = form.name.ifBlank { "点 ${point.id}" }
+        point.delay = form.delay.toLongOrNull() ?: 0
+        point.touchDuration = form.touchDuration.toLongOrNull() ?: 300
+        point.repeatCount = form.repeatCount.toIntOrNull() ?: 1
+        point.randomDistance = form.randomDistance.toIntOrNull() ?: 0
+        if (point.pairId == -1) {
+            point.type = form.type   // 普通点的类型由单选决定
+        }
+        // 滑动点的类型保持不变
+        point.clickPosition = if (form.clickPosition == "随机") "随机" else "中间"
+
+        if (point.pairId != -1) {
+            clickPoints.filter { it.pairId == point.pairId }.forEach { p ->
+                p.name = point.name
+                p.delay = point.delay
+                p.touchDuration = point.touchDuration
+                p.repeatCount = point.repeatCount
+                p.randomDistance = point.randomDistance
+            }
+        }
+        Toast.makeText(this, "设置已保存", Toast.LENGTH_SHORT).show()
+        pointSettingsDialog?.dismiss()
     }
 
     private fun savePointsToFile() {
@@ -1473,30 +1378,15 @@ class FloatingWindowService : Service() {
             rootView.alpha = 0.5f
             for (point in clickPoints) { point.view.visibility = View.GONE }
             for ((_, pipePair) in pipeMap) { pipePair.first.visibility = View.GONE }
-            rootView.findViewById<ImageView>(R.id.btnHide)
-                .setImageResource(R.drawable.ic_display)
-            setButtonsEnabledForHide(true)   // 置灰除主按钮、退出、隐藏以外的按钮
+            // 隐藏按钮图标切换为“显示”、其余按钮置灰，均由 ui.isHidden 派生自动刷新
             Toast.makeText(this, "已隐藏点击点", Toast.LENGTH_SHORT).show()
         } else {
             // 退出隐藏模式
             rootView.alpha = 1.0f
             for (point in clickPoints) { point.view.visibility = View.VISIBLE }
             for ((_, pipePair) in pipeMap) { pipePair.first.visibility = View.VISIBLE }
-            rootView.findViewById<ImageView>(R.id.btnHide)
-                .setImageResource(R.drawable.ic_hide)
-            setButtonsEnabledForHide(false)  // 恢复所有按钮
+            // 图标与按钮可用性同样由 ui.isHidden 派生自动恢复
             Toast.makeText(this, "已显示点击点", Toast.LENGTH_SHORT).show()
-        }
-    }
-    private fun setButtonsEnabledForHide(hide: Boolean) {
-        val idsToDisable = listOf(
-            R.id.btnStart, R.id.btnAdd, R.id.btnSlide,
-            R.id.btnReduce, R.id.btnSettings
-        )
-        for (id in idsToDisable) {
-            val btn = rootView.findViewById<View>(id)
-            btn.isEnabled = !hide
-            btn.alpha = if (hide) 0.4f else 1.0f
         }
     }
 }

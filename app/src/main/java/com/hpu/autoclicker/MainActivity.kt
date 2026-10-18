@@ -9,12 +9,16 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.widget.Button
-import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
-import android.graphics.Color
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.hpu.autoclicker.ui.MainScreen
+import com.hpu.autoclicker.ui.MainUiState
+import com.hpu.autoclicker.ui.theme.AutoClickerTheme
 
 class MainActivity : AppCompatActivity() {
 
@@ -28,28 +32,35 @@ class MainActivity : AppCompatActivity() {
         private const val MODE_NEW = "new"
     }
 
-    private lateinit var btnRequestPermission: Button
-    private lateinit var btnCheckPermission: Button
-    private lateinit var tvModeOld: TextView
-    private lateinit var tvModeNew: TextView
-    private lateinit var btnToggleService: Button
-    private lateinit var tvStatus: TextView
+    /**
+     * Compose UI 状态。
+     * 原来逐个 findViewById + setText/setBackgroundTintList 的刷新方式，
+     * 迁移为「单一状态源」驱动 Compose 重组（业务逻辑本身不变）。
+     */
+    private var uiState by mutableStateOf(MainUiState())
 
     private var isServiceRunning = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
-        btnRequestPermission = findViewById(R.id.btnRequestPermission)
-        btnCheckPermission = findViewById(R.id.btnCheckPermission)
-        tvModeOld = findViewById(R.id.tvModeOld)
-        tvModeNew = findViewById(R.id.tvModeNew)
-        btnToggleService = findViewById(R.id.btnToggleService)
-        tvStatus = findViewById(R.id.tvStatus)
-
-        setupClickListeners()
-        updateModeSwitchUI()
+        // 由 setContentView(R.layout.activity_main) 迁移为 Compose setContent
+        setContent {
+            AutoClickerTheme {
+                MainScreen(
+                    state = uiState,
+                    onRequestPermission = { requestAllPermissions() },
+                    onRefresh = {
+                        refreshPermissionAndServiceState()
+                        toast("状态已刷新")
+                    },
+                    onSwitchMode = { toNew -> requestSwitchMode(toNew) },
+                    onToggleService = {
+                        if (isServiceRunning) stopFloatingService() else startFloatingService()
+                        updateToggleButton()
+                    },
+                )
+            }
+        }
 
         val filter = IntentFilter("com.hpu.autoclicker.SERVICE_STOPPED")
         ContextCompat.registerReceiver(this, serviceStoppedReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
@@ -65,49 +76,20 @@ class MainActivity : AppCompatActivity() {
         refreshPermissionAndServiceState()
     }
 
-    private fun setupClickListeners() {
-        // 获取权限按钮：依次检查悬浮窗权限和无障碍权限
-        btnRequestPermission.setOnClickListener {
-            requestAllPermissions()
-        }
-
-        btnCheckPermission.setOnClickListener {
-            refreshPermissionAndServiceState()
-            Toast.makeText(this, "状态已刷新", Toast.LENGTH_SHORT).show()
-        }
-
-        // 新旧功能切换（分段开关）：选择持久化，下次启动恢复；悬浮窗运行中不允许切换
-        tvModeOld.setOnClickListener { requestSwitchMode(toNew = false) }
-        tvModeNew.setOnClickListener { requestSwitchMode(toNew = true) }
-
-        btnToggleService.setOnClickListener {
-            if (isServiceRunning) {
-                stopFloatingService()
-            } else {
-                startFloatingService()
-            }
-            updateToggleButton()
-        }
-    }
-
     /**
      * 切换功能模式并持久化；已是目标模式则不处理，悬浮窗运行中提示先关闭
      */
     private fun requestSwitchMode(toNew: Boolean) {
         if (isFeatureModeNew() == toNew) return
         if (isServiceRunning) {
-            Toast.makeText(this, "请先关闭悬浮窗再切换模式", Toast.LENGTH_SHORT).show()
+            toast("请先关闭悬浮窗再切换模式")
             return
         }
         getSharedPreferences(MODE_PREFS, MODE_PRIVATE)
             .edit().putString(MODE_KEY, if (toNew) MODE_NEW else MODE_OLD).apply()
-        updateModeSwitchUI()
+        // 原 updateModeSwitchUI() 的分段开关选中态渲染已由 Compose 依据状态派生，此处无需手动切换
         refreshPermissionAndServiceState()
-        Toast.makeText(
-            this,
-            if (toNew) "已切换到代点器" else "已切换到连点器",
-            Toast.LENGTH_SHORT
-        ).show()
+        toast(if (toNew) "已切换到代点器" else "已切换到连点器")
     }
 
     /** 当前是否为新功能模式（悬浮快捷点击），默认旧功能 */
@@ -116,28 +98,12 @@ class MainActivity : AppCompatActivity() {
             .getString(MODE_KEY, MODE_OLD) == MODE_NEW
     }
 
-    /** 分段开关选中态：选中段白色滑块 + 蓝字，未选中段透明 + 白字 */
-    private fun updateModeSwitchUI() {
-        if (isFeatureModeNew()) {
-            tvModeNew.setBackgroundResource(R.drawable.bg_mode_switch_thumb)
-            tvModeNew.setTextColor(getColor(R.color.primary))
-            tvModeOld.background = null
-            tvModeOld.setTextColor(getColor(R.color.on_gradient))
-        } else {
-            tvModeOld.setBackgroundResource(R.drawable.bg_mode_switch_thumb)
-            tvModeOld.setTextColor(getColor(R.color.primary))
-            tvModeNew.background = null
-            tvModeNew.setTextColor(getColor(R.color.on_gradient))
-        }
-    }
-
     // 广播接收器
     private val serviceStoppedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == "com.hpu.autoclicker.SERVICE_STOPPED") {
                 isServiceRunning = false
                 updateToggleButton()
-                tvStatus.text = "当前状态：悬浮窗未启动"
             }
         }
     }
@@ -161,7 +127,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 3. 两个权限都已获取
-        Toast.makeText(this, "所有权限已获取", Toast.LENGTH_SHORT).show()
+        toast("所有权限已获取")
     }
 
     /**
@@ -173,9 +139,10 @@ class MainActivity : AppCompatActivity() {
                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:$packageName")
             )
+            @Suppress("DEPRECATION")
             startActivityForResult(intent, REQUEST_OVERLAY_PERMISSION)
         } else {
-            Toast.makeText(this, "系统默认支持悬浮窗", Toast.LENGTH_SHORT).show()
+            toast("系统默认支持悬浮窗")
         }
     }
 
@@ -198,41 +165,26 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * 刷新所有权限状态、按钮启用条件和颜色
+     * （迁移后仅计算状态并推送给 Compose，由 UI 层派生出文案/颜色/可用性）
      */
     private fun refreshPermissionAndServiceState() {
         val hasOverlay = checkOverlayPermission()
         val hasAccessibility = checkAccessibilityPermission()
-
-        // 获取权限按钮：两个权限都满足 → 绿色，否则红色
-        if (hasOverlay && hasAccessibility) {
-            btnRequestPermission.backgroundTintList = getColorStateList(R.color.success)
-            btnRequestPermission.text = "权限已获取"
-        } else {
-            btnRequestPermission.backgroundTintList = getColorStateList(R.color.danger)
-            btnRequestPermission.text = "获取权限"
-        }
-
-        // 启动悬浮窗按钮：只有两个权限都满足才可用
         val allPermissionsGranted = hasOverlay && hasAccessibility
-        btnToggleService.isEnabled = allPermissionsGranted
 
-        if (!allPermissionsGranted) {
-            btnToggleService.backgroundTintList = getColorStateList(R.color.disabled)
-            btnToggleService.setTextColor(getColor(R.color.text_secondary))
-            btnToggleService.text = "启动悬浮窗"
-        } else {
+        if (allPermissionsGranted) {
             isServiceRunning = isFloatingServiceRunning(currentServiceClass())
-            updateToggleButton()
+        } else {
+            // 权限不全时不检测服务状态（与原逻辑一致：按钮禁用并显示「启动悬浮窗」）
+            isServiceRunning = false
         }
 
-        // 状态提示（按模式区分服务名）
-        val modeName = if (isFeatureModeNew()) "代点器" else "连点器"
-        val statusText = when {
-            !allPermissionsGranted -> "请先获取所有权限"
-            isServiceRunning -> "悬浮窗正在运行（$modeName）"
-            else -> "悬浮窗未启动"
-        }
-        tvStatus.text = "当前状态：$statusText"
+        uiState = MainUiState(
+            isNewMode = isFeatureModeNew(),
+            hasOverlayPermission = hasOverlay,
+            hasAccessibilityPermission = hasAccessibility,
+            isServiceRunning = isServiceRunning,
+        )
     }
 
     /** 按当前模式返回对应的前台服务 */
@@ -275,9 +227,8 @@ class MainActivity : AppCompatActivity() {
             startService(intent)
         }
         isServiceRunning = true
-        Toast.makeText(this, "悬浮窗已启动", Toast.LENGTH_SHORT).show()
+        toast("悬浮窗已启动")
         updateToggleButton()
-        tvStatus.text = "当前状态：悬浮窗正在运行"
     }
 
     /**
@@ -287,22 +238,13 @@ class MainActivity : AppCompatActivity() {
         val intent = Intent(this, currentServiceClass())
         stopService(intent)
         isServiceRunning = false
-        Toast.makeText(this, "悬浮窗已关闭", Toast.LENGTH_SHORT).show()
+        toast("悬浮窗已关闭")
         updateToggleButton()
-        tvStatus.text = "当前状态：悬浮窗未启动"
     }
 
+    /** 仅同步「服务运行态」到 Compose（按钮文案/颜色由状态派生） */
     private fun updateToggleButton() {
-        if (isServiceRunning) {
-            btnToggleService.text = "关闭悬浮窗"
-            btnToggleService.backgroundTintList = getColorStateList(R.color.danger)
-            btnToggleService.setTextColor(getColor(R.color.white))
-        } else {
-            // 深蓝渐变背景上用白底蓝字，保证按钮醒目
-            btnToggleService.text = "启动悬浮窗"
-            btnToggleService.backgroundTintList = getColorStateList(R.color.white)
-            btnToggleService.setTextColor(getColor(R.color.primary))
-        }
+        uiState = uiState.copy(isServiceRunning = isServiceRunning)
     }
 
     private fun isFloatingServiceRunning(serviceClass: Class<*>): Boolean {
@@ -313,5 +255,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return false
+    }
+
+    private fun toast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 }

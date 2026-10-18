@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- 分段开关轨道：半透明白，深色渐变背景上轻盈不突兀 -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <solid android:color="#33FFFFFF" />
-    <corners android:radius="12dp" />
-</shape>
