@@ -9,7 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -27,7 +28,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.hpu.autoclicker.R
 import com.hpu.autoclicker.core.ui.rememberRawTapDetector
-import com.hpu.autoclicker.core.theme.LocalAppPalette
+import com.hpu.autoclicker.core.theme.AppTheme
 
 /**
  * 连点器悬浮窗（旧功能）的 Compose 内容（由 activity_floating_window_service.xml 迁移）
@@ -82,7 +83,8 @@ fun FloatingServiceContent(
     /** 上报退出按钮在窗口内的位置 */
     onExitBounds: (Rect) -> Unit,
 ) {
-    val palette = LocalAppPalette.current
+    val scheme = MaterialTheme.colorScheme
+    val sem = AppTheme.colors
     Column(
         // 宽度改为「随内容自适应」：按钮统一收窄到 40dp 后，若窗口仍固定 120dp，
         // 吸附屏幕边缘时按钮会因水平居中而在窗口内留下约 40dp 透明间隙，看起来就不贴边了。
@@ -98,16 +100,18 @@ fun FloatingServiceContent(
                 .size(40.dp)
                 .onGloballyPositioned { onMainBounds(it.boundsInWindow().toRect()) }
                 .pointerInteropFilter { onMainTouch(it) }
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (state.mainPressed) palette.primaryDark else palette.primary)
+                .clip(MaterialTheme.shapes.small)
+                .background(if (state.mainPressed) sem.primaryPressed else scheme.primary)
                 .padding(8.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Image(
-                painter = painterResource(R.drawable.ic_main),
-                contentDescription = "主按钮",
-                modifier = Modifier.fillMaxSize(),
-            )
+        Image(
+            painter = painterResource(R.drawable.ic_main),
+            contentDescription = "主按钮",
+            modifier = Modifier.fillMaxSize(),
+            // 图标 drawable 是白色填充；深色模式下主按钮底为浅青，着 onPrimary 保证对比度
+            colorFilter = ColorFilter.tint(scheme.onPrimary),
+        )
         }
 
         // 展开的操作栏：启动 / 添加 / 滑动 / 减少 / 设置 / 隐藏 / 退出
@@ -176,7 +180,8 @@ private fun FloatingIconRow(
     onClick: () -> Unit,
     onBounds: ((Rect) -> Unit)? = null,
 ) {
-    val palette = LocalAppPalette.current
+    val scheme = MaterialTheme.colorScheme
+    val sem = AppTheme.colors
     // 与主按钮同一条原始触摸链路（不使用 clickable，避免两条事件链路互相吞事件）
     val tap = rememberRawTapDetector()
     Box(
@@ -191,8 +196,8 @@ private fun FloatingIconRow(
                 }
             )
             .alpha(if (enabled) 1f else 0.4f)   // 禁用态置灰（对应原 btn.alpha = 0.4f）
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (enabled && tap.isPressed) palette.primaryDark else palette.primary)
+            .clip(MaterialTheme.shapes.small)
+            .background(if (enabled && tap.isPressed) sem.primaryPressed else scheme.primary)
             .pointerInteropFilter { event -> tap.onEvent(event, enabled = enabled, onTap = onClick) }
             .padding(6.dp),
         contentAlignment = Alignment.Center,
@@ -201,6 +206,7 @@ private fun FloatingIconRow(
             painter = painterResource(iconRes),
             contentDescription = desc,
             modifier = Modifier.fillMaxSize(),
+            colorFilter = ColorFilter.tint(scheme.onPrimary),
         )
     }
 }

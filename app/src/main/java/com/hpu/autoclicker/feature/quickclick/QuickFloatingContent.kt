@@ -9,7 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -29,10 +30,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.hpu.autoclicker.R
 import com.hpu.autoclicker.core.ui.rememberRawTapDetector
-import com.hpu.autoclicker.core.theme.LocalAppPalette
+import com.hpu.autoclicker.core.theme.AppTheme
 import kotlin.math.roundToInt
 
 /**
@@ -86,7 +86,8 @@ fun QuickFloatingContent(
     /** 展开区在根视图中的 Y 偏移（px），用于拖动排序时换算屏幕坐标 */
     onExpandedPositioned: (Float) -> Unit,
 ) {
-    val palette = LocalAppPalette.current
+    val scheme = MaterialTheme.colorScheme
+    val sem = AppTheme.colors
     Column(
         // 宽度改为「随内容自适应」：按钮统一收窄到 40dp 后，若窗口仍固定 120dp，
         // 吸附屏幕边缘时按钮会因水平居中而在窗口内留下约 40dp 透明间隙，看起来就不贴边了。
@@ -102,8 +103,8 @@ fun QuickFloatingContent(
                 .size(40.dp)
                 .graphicsLayer { alpha = state.mainAlpha }
                 .pointerInteropFilter { onMainTouch(it) }
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (state.mainPressed) palette.primaryDark else palette.primary)
+                .clip(MaterialTheme.shapes.small)
+                .background(if (state.mainPressed) sem.primaryPressed else scheme.primary)
                 .padding(8.dp),
             contentAlignment = Alignment.Center,
         ) {
@@ -111,6 +112,8 @@ fun QuickFloatingContent(
                 painter = painterResource(R.drawable.ic_main),
                 contentDescription = "主按钮",
                 modifier = Modifier.fillMaxSize(),
+                // 深色模式下主按钮底为浅青，着 onPrimary 保证图标对比度
+                colorFilter = ColorFilter.tint(scheme.onPrimary),
             )
         }
 
@@ -149,18 +152,19 @@ fun QuickFloatingContent(
     }
 }
 
-/** 编辑态控制行：[+]/[-]/[设置]/[取消]，32dp 高、12dp 圆角（对应原 buildControlRow） */
+/** 编辑态控制行：[+]/[-]/[设置]/[取消]（对应原 buildControlRow） */
 @Composable
 private fun ControlRow(iconRes: Int, desc: String, onClick: () -> Unit) {
-    val palette = LocalAppPalette.current
+    val scheme = MaterialTheme.colorScheme
+    val sem = AppTheme.colors
     // 与主按钮同一条原始触摸链路（不使用 clickable，避免两条事件链路互相吞事件）
     val tap = rememberRawTapDetector()
     Box(
         modifier = Modifier
             .padding(top = 4.dp)
             .size(40.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (tap.isPressed) palette.primaryDark else palette.primary)
+            .clip(MaterialTheme.shapes.small)
+            .background(if (tap.isPressed) sem.primaryPressed else scheme.primary)
             .pointerInteropFilter { event -> tap.onEvent(event, onTap = onClick) }
             .padding(6.dp),
         contentAlignment = Alignment.Center,
@@ -169,6 +173,7 @@ private fun ControlRow(iconRes: Int, desc: String, onClick: () -> Unit) {
             painter = painterResource(iconRes),
             contentDescription = desc,
             modifier = Modifier.fillMaxSize(),
+            colorFilter = ColorFilter.tint(scheme.onPrimary),
         )
     }
 }
@@ -184,7 +189,10 @@ private fun ChildRow(
     onClick: () -> Unit,
     onTouch: (MotionEvent) -> Boolean,
 ) {
-    val palette = LocalAppPalette.current
+    val scheme = MaterialTheme.colorScheme
+    val sem = AppTheme.colors
+    // graphicsLayer 的 lambda 不是 Composable 上下文，shape 须在外部捕获
+    val rowShape = MaterialTheme.shapes.small
     // 非编辑态用同一套原始触摸判定做点击；编辑态交给 Service 的长按拖动状态机
     val tap = rememberRawTapDetector()
     Box(
@@ -195,11 +203,11 @@ private fun ChildRow(
             .graphicsLayer {
                 // 拖动中的按钮浮起（对应原 view.elevation = 6dp）
                 shadowElevation = if (dragging) 6.dp.toPx() else 0f
-                shape = RoundedCornerShape(12.dp)
+                shape = rowShape
             }
-            .clip(RoundedCornerShape(12.dp))
+            .clip(rowShape)
             .background(
-                if (pressed || dragging || tap.isPressed) palette.primaryDark else palette.primary
+                if (pressed || dragging || tap.isPressed) sem.primaryPressed else scheme.primary
             )
             .pointerInteropFilter { event ->
                 if (editing) onTouch(event)
@@ -210,9 +218,8 @@ private fun ChildRow(
     ) {
         Text(
             text = cfg.name,
-            color = Color.White,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
+            color = scheme.onPrimary,
+            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
             maxLines = 1,
         )
     }
