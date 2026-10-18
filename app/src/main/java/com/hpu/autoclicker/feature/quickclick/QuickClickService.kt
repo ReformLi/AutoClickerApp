@@ -1,4 +1,4 @@
-package com.hpu.autoclicker
+package com.hpu.autoclicker.feature.quickclick
 
 import android.app.AlertDialog
 import android.app.Notification
@@ -22,14 +22,9 @@ import android.view.WindowManager
 import android.widget.EditText
 import android.widget.Toast
 import androidx.compose.ui.platform.ComposeView
-import com.hpu.autoclicker.ui.QuickConfigDialogContent
-import com.hpu.autoclicker.ui.QuickConfigFormState
-import com.hpu.autoclicker.ui.QuickFloatingContent
-import com.hpu.autoclicker.ui.QuickFloatingUiState
-import com.hpu.autoclicker.ui.ScriptManagerDialogContent
-import com.hpu.autoclicker.ui.ScriptManagerState
-import com.hpu.autoclicker.ui.ServiceComposeHost
-import com.hpu.autoclicker.ui.theme.AutoClickerTheme
+import com.hpu.autoclicker.core.accessibility.AutoClickerAccessibilityService
+import com.hpu.autoclicker.core.ui.ServiceComposeHost
+import com.hpu.autoclicker.core.theme.AutoClickerTheme
 
 /**
  * 悬浮快捷点击服务（新功能）
@@ -550,18 +545,7 @@ class QuickClickService : Service() {
             }
             dialog.setOnDismissListener { host.destroy() }
             // Service 弹窗必须挂到悬浮窗层，否则 BadTokenException（与旧功能处理一致）
-            dialog.window?.setType(
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                else
-                    @Suppress("DEPRECATION")
-                    WindowManager.LayoutParams.TYPE_PHONE
-            )
-            dialog.show()
-            dialog.window?.setLayout(
-                (getScreenWidth() * 0.9f).toInt(),
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+            showOverlayDialog(dialog)
         } catch (e: Exception) {
             android.util.Log.e("QuickClick", "打开配置弹框失败", e)
         }
@@ -715,7 +699,13 @@ class QuickClickService : Service() {
 
     /**
      * Service 内弹窗统一挂到悬浮窗层（否则 BadTokenException，与旧功能处理一致），
-     * 并统一设置宽度
+     * 并统一设置宽度。
+     *
+     * 这里还必须清掉系统给 TYPE_APPLICATION_OVERLAY 弹框附加的 FLAG_ALT_FOCUSABLE_IM：
+     * 该 flag 对「可聚焦窗口」的含义是「本窗口不与输入法交互」——输入法会被压到本窗口
+     * 下方、本窗口永远不会成为输入法的输入目标（InputMethodManager 的 mServedView 一直
+     * 停在上一个 Activity 的 DecorView 上），表现为输入框有光标、能收到文本，但软键盘不弹。
+     * 因此凡带输入框的弹框（新建按钮、保存/重命名脚本，以及连点器的设置弹框）都要走这里。
      */
     private fun showOverlayDialog(dialog: AlertDialog, widthRatio: Float = 0.9f) {
         dialog.window?.setType(
@@ -726,6 +716,7 @@ class QuickClickService : Service() {
                 WindowManager.LayoutParams.TYPE_PHONE
         )
         dialog.show()
+        dialog.window?.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
         dialog.window?.setLayout(
             (getScreenWidth() * widthRatio).toInt(),
             ViewGroup.LayoutParams.WRAP_CONTENT

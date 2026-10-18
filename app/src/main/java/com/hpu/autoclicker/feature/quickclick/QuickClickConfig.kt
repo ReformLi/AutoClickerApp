@@ -1,4 +1,4 @@
-package com.hpu.autoclicker
+package com.hpu.autoclicker.feature.quickclick
 
 import android.content.Context
 import org.json.JSONArray

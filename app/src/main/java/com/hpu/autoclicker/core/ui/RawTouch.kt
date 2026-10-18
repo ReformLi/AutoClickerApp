@@ -1,4 +1,4 @@
-package com.hpu.autoclicker.ui
+package com.hpu.autoclicker.core.ui
 
 import android.os.SystemClock
 import android.util.Log

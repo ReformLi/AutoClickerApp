@@ -1,11 +1,17 @@
-package com.hpu.autoclicker.ui.theme
+package com.hpu.autoclicker.core.theme
 
+import android.os.Build
+import android.text.Editable
+import android.text.InputFilter
+import android.text.InputType
+import android.text.TextWatcher
+import android.view.Gravity
+import android.view.View
+import android.widget.EditText
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -18,8 +24,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -31,7 +35,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,14 +47,15 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 
 /**
  * Compose 设计系统
@@ -229,7 +237,18 @@ fun AppOutlineButton(
     }
 }
 
-/** 输入框：浅色填充 + 12dp 圆角，聚焦时蓝色描边（对应 ModernEditText） */
+/**
+ * 输入框：浅色填充 + 12dp 圆角，聚焦时蓝色描边（对应 ModernEditText）。
+ *
+ * 内部刻意用 AndroidView 包裹原生 EditText，而非 Compose 的 BasicTextField：
+ * 本组件只用在「Service 内 TYPE_APPLICATION_OVERLAY 弹框」这一场景，
+ * 该场景下 Compose 输入框只会把 showSoftInput 请求发给 ComposeView，
+ * 而 ComposeView 并不是输入法记录的 served/focus view，请求会被输入法直接丢弃
+ * （logcat: InputMethodManager「The current service view is not the focus view」），
+ * 表现为输入框有光标、能收按键，但软键盘始终不弹出。
+ * 原生 EditText 被点中时会走 View.requestFocus()，输入法能正常注册并弹出键盘。
+ * 因此外观（底色/描边/圆角）由外层 Box 统一负责，EditText 只做纯输入。
+ */
 @Composable
 fun ModernTextField(
     value: String,
@@ -244,8 +263,14 @@ fun ModernTextField(
     textAlign: TextAlign = TextAlign.Unspecified,
 ) {
     val palette = LocalAppPalette.current
-    val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
+    val paddingPx = with(LocalDensity.current) {
+        intArrayOf(14.dp.roundToPx(), 12.dp.roundToPx())
+    }
+    var focused by remember { mutableStateOf(false) }
+    // factory 里注册的 TextWatcher 只注册一次，用 rememberUpdatedState 让它始终回调最新的 onValueChange
+    val currentOnValueChange by rememberUpdatedState { raw: String ->
+        onValueChange(if (maxLength != null && raw.length > maxLength) raw.take(maxLength) else raw)
+    }
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -258,33 +283,57 @@ fun ModernTextField(
                 width = if (focused) 1.5.dp else 1.dp,
                 color = if (focused) palette.primary else palette.stroke,
                 shape = RoundedCornerShape(12.dp),
-            )
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            ),
         contentAlignment = Alignment.CenterStart,
     ) {
-        BasicTextField(
-            value = value,
-            onValueChange = { raw ->
-                onValueChange(if (maxLength != null && raw.length > maxLength) raw.take(maxLength) else raw)
-            },
+        AndroidView(
             modifier = Modifier.fillMaxWidth(),
-            enabled = enabled,
-            readOnly = readOnly,
-            singleLine = singleLine,
-            textStyle = TextStyle(
-                color = palette.textPrimary,
-                fontSize = 16.sp,
-                textAlign = textAlign,
-            ),
-            cursorBrush = SolidColor(palette.primary),
-            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-            interactionSource = interaction,
-            decorationBox = { inner ->
-                Box(contentAlignment = Alignment.CenterStart) {
-                    if (value.isEmpty() && hint.isNotEmpty()) {
-                        Text(text = hint, color = palette.textHint, fontSize = 16.sp)
-                    }
-                    inner()
+            factory = { ctx ->
+                EditText(ctx).apply {
+                    // 原 EditText 自带下划线背景，这里置空，底色/描边由外层 Box 绘制
+                    background = null
+                    setPadding(paddingPx[0], paddingPx[1], paddingPx[0], paddingPx[1])
+                    textSize = 16f
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER_VERTICAL
+                    setOnFocusChangeListener { _, hasFocus -> focused = hasFocus }
+                    addTextChangedListener(object : TextWatcher {
+                        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                        override fun afterTextChanged(s: Editable?) {
+                            currentOnValueChange(s?.toString() ?: "")
+                        }
+                    })
+                }
+            },
+            update = { et ->
+                et.isEnabled = enabled
+                et.setTextColor(palette.textPrimary.toArgb())
+                et.setHintTextColor(palette.textHint.toArgb())
+                et.hint = hint
+                // readOnly：保留显示效果，但不接受焦点/编辑，因而也不需要键盘
+                et.isFocusable = !readOnly
+                et.isFocusableInTouchMode = !readOnly
+                et.isCursorVisible = !readOnly
+                et.inputType =
+                    if (keyboardType == KeyboardType.Number) InputType.TYPE_CLASS_NUMBER
+                    else InputType.TYPE_CLASS_TEXT
+                et.isSingleLine = singleLine
+                et.filters =
+                    if (maxLength != null) arrayOf<InputFilter>(InputFilter.LengthFilter(maxLength))
+                    else emptyArray<InputFilter>()
+                et.textAlignment = when (textAlign) {
+                    TextAlign.Center -> View.TEXT_ALIGNMENT_CENTER
+                    TextAlign.End -> View.TEXT_ALIGNMENT_VIEW_END
+                    else -> View.TEXT_ALIGNMENT_VIEW_START
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    et.textCursorDrawable?.setTint(palette.primary.toArgb())
+                }
+                // 仅在外部状态与输入框内容不一致时回灌（如弹框初始化回填），避免打断用户输入的选区
+                if (et.text.toString() != value) {
+                    et.setText(value)
+                    et.setSelection(value.length)
                 }
             },
         )

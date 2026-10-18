@@ -16,9 +16,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
-import com.hpu.autoclicker.ui.MainScreen
-import com.hpu.autoclicker.ui.MainUiState
-import com.hpu.autoclicker.ui.theme.AutoClickerTheme
+import com.hpu.autoclicker.core.accessibility.AutoClickerAccessibilityService
+import com.hpu.autoclicker.feature.clicker.FloatingWindowService
+import com.hpu.autoclicker.feature.main.MainScreen
+import com.hpu.autoclicker.feature.main.MainUiState
+import com.hpu.autoclicker.feature.quickclick.QuickClickService
+import com.hpu.autoclicker.core.theme.AutoClickerTheme
 
 class MainActivity : AppCompatActivity() {
 

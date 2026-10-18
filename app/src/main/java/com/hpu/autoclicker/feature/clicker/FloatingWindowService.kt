@@ -1,4 +1,4 @@
-package com.hpu.autoclicker
+package com.hpu.autoclicker.feature.clicker
 
 import android.accessibilityservice.AccessibilityService
 import android.app.AlertDialog
@@ -31,14 +31,9 @@ import android.widget.Toast
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.content.ContextCompat
 import androidx.core.view.doOnLayout
-import com.hpu.autoclicker.ui.FloatingServiceContent
-import com.hpu.autoclicker.ui.FloatingServiceUiState
-import com.hpu.autoclicker.ui.PointSettingsDialogContent
-import com.hpu.autoclicker.ui.PointSettingsFormState
-import com.hpu.autoclicker.ui.ServiceComposeHost
-import com.hpu.autoclicker.ui.SettingsDialogContent
-import com.hpu.autoclicker.ui.SettingsDialogState
-import com.hpu.autoclicker.ui.theme.AutoClickerTheme
+import com.hpu.autoclicker.core.accessibility.AutoClickerAccessibilityService
+import com.hpu.autoclicker.core.ui.ServiceComposeHost
+import com.hpu.autoclicker.core.theme.AutoClickerTheme
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -724,6 +719,9 @@ class FloatingWindowService : Service() {
             setCanceledOnTouchOutside(true)
             setOnDismissListener { host.destroy() }
             show()
+            // 清掉系统给 TYPE_APPLICATION_OVERLAY 弹框附加的 FLAG_ALT_FOCUSABLE_IM，
+            // 否则弹框内的输入框（循环次数等）点了也不会弹软键盘（原因见 QuickClickService.showOverlayDialog）
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
         }
     }
 
@@ -1178,6 +1176,9 @@ class FloatingWindowService : Service() {
             setCanceledOnTouchOutside(true)   // 点击外部空白关闭
             setOnDismissListener { host.destroy() }
             show()
+            // 与设置/快捷弹框一致：清掉系统给 TYPE_APPLICATION_OVERLAY 弹框附加的 FLAG_ALT_FOCUSABLE_IM，
+            // 否则本弹框内的输入框（延迟/时长/重复次数/随机距离）点了不弹软键盘（原因见 QuickClickService.showOverlayDialog）
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
             // show 之后设置全屏窗口，外层 wrapper 的 padding 区域才能完整接收上下左右空白点击
             window?.setLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT,

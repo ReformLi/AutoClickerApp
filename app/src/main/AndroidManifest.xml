@@ -16,7 +16,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.AutoClickerApp">
         <service
-            android:name=".FloatingWindowService"
+            android:name=".feature.clicker.FloatingWindowService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync"
@@ -24,7 +24,7 @@
 
         <!-- 悬浮快捷点击服务（新功能）：前台服务维持悬浮窗与识别链路存活 -->
         <service
-            android:name=".QuickClickService"
+            android:name=".feature.quickclick.QuickClickService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync"
@@ -32,7 +32,7 @@
 
         <!-- 声明无障碍服务，权限设为 android.permission.BIND_ACCESSIBILITY_SERVICE -->
         <service
-            android:name=".AutoClickerAccessibilityService"
+            android:name=".core.accessibility.AutoClickerAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true"
             tools:ignore="AccessibilityPolicy">

@@ -1,4 +1,4 @@
-package com.hpu.autoclicker.ui
+package com.hpu.autoclicker.feature.clicker
 
 import android.graphics.Rect
 import android.view.MotionEvent
@@ -20,14 +20,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.hpu.autoclicker.R
-import com.hpu.autoclicker.ui.theme.LocalAppPalette
+import com.hpu.autoclicker.core.ui.rememberRawTapDetector
+import com.hpu.autoclicker.core.theme.LocalAppPalette
 
 /**
  * 连点器悬浮窗（旧功能）的 Compose 内容（由 activity_floating_window_service.xml 迁移）

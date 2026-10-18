@@ -1,4 +1,4 @@
-package com.hpu.autoclicker.ui
+package com.hpu.autoclicker.feature.main
 
 import android.widget.ImageView
 import androidx.compose.foundation.background
@@ -21,19 +21,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.hpu.autoclicker.R
-import com.hpu.autoclicker.ui.theme.AppButton
-import com.hpu.autoclicker.ui.theme.AppOutlineButton
-import com.hpu.autoclicker.ui.theme.LocalAppPalette
-import com.hpu.autoclicker.ui.theme.MainGradientBackground
-import com.hpu.autoclicker.ui.theme.ModernBody
-import com.hpu.autoclicker.ui.theme.ModernLabel
-import com.hpu.autoclicker.ui.theme.ModernTitle
-import com.hpu.autoclicker.ui.theme.ModernCard
+import com.hpu.autoclicker.core.theme.AppButton
+import com.hpu.autoclicker.core.theme.AppOutlineButton
+import com.hpu.autoclicker.core.theme.LocalAppPalette
+import com.hpu.autoclicker.core.theme.MainGradientBackground
+import com.hpu.autoclicker.core.theme.ModernBody
+import com.hpu.autoclicker.core.theme.ModernLabel
+import com.hpu.autoclicker.core.theme.ModernTitle
+import com.hpu.autoclicker.core.theme.ModernCard
 
 /**
  * 主页 UI 状态（由 MainActivity 持有并驱动刷新）
@@ -83,9 +84,9 @@ fun MainScreen(
             // 应用图标：白色圆角容器衬托（对应原 ImageView + bg_card + 14dp padding）
             AppIcon()
 
-            // 标题
+            // 标题（对应原 XML android:text="@string/app_name"）
             ModernTitle(
-                text = "连点器",
+                text = stringResource(R.string.app_name),
                 modifier = Modifier.padding(top = 16.dp),
                 color = palette.onGradient,
             )

@@ -1,4 +1,4 @@
-package com.hpu.autoclicker.ui
+package com.hpu.autoclicker.feature.quickclick
 
 import android.view.MotionEvent
 import androidx.compose.foundation.Image
@@ -30,9 +30,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.hpu.autoclicker.QuickClickConfig
 import com.hpu.autoclicker.R
-import com.hpu.autoclicker.ui.theme.LocalAppPalette
+import com.hpu.autoclicker.core.ui.rememberRawTapDetector
+import com.hpu.autoclicker.core.theme.LocalAppPalette
 import kotlin.math.roundToInt
 
 /**

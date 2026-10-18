@@ -1,4 +1,4 @@
-package com.hpu.autoclicker
+package com.hpu.autoclicker.feature.clicker
 
 import android.content.Context
 import android.graphics.Canvas
