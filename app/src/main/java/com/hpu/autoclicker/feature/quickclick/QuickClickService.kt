@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.graphics.Point
@@ -16,15 +17,19 @@ import android.os.Looper
 import android.text.InputFilter
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.Toast
 import androidx.compose.ui.platform.ComposeView
 import com.hpu.autoclicker.core.accessibility.AutoClickerAccessibilityService
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * 悬浮快捷点击服务（新功能）
@@ -34,9 +39,9 @@ import com.hpu.autoclicker.core.theme.AutoClickerTheme
  * 三种状态：
  * - 折叠态：屏幕上只有一个总按钮，零编辑控件；单击 → 展开
  * - 展开态：总按钮 + 已配置子按钮纵向排列；再单击总按钮 → 折叠
- * - 编辑态：双击总按钮进入；出现与旧功能类似的 [+][-][设置][取消]；
- *   “+”弹框新建按钮，实体化到 + 和 - 之间；子按钮长按拖动调换位置，
- *   但始终处于 + 和 - 之间；“取消”退出编辑态
+ * - 编辑态：双击总按钮进入；展开区显示 [+][脚本管理][透明度][关闭]；
+ *   “+”弹框新建按钮，单击子按钮打开修改/删除弹框，长按拖动调整顺序；
+ *   “关闭”关闭悬浮窗（有未保存按钮时先提示保存）
  *
  * 手势状态机：总按钮统一在 OnTouchListener 内处理单击/拖动/双击，
  * 禁止混用三套事件；位移 > touchSlop 判定为拖动，拖动过程中绝不触发识别/点击；
@@ -53,6 +58,9 @@ class QuickClickService : Service() {
 
     companion object {
         const val ACTION_STOP = "com.hpu.autoclicker.STOP_QUICK_CLICK"
+
+        /** 截屏前等待悬浮窗/弹框真正从画面消失的时间 */
+        private const val HIDE_BEFORE_SCREENSHOT_MS = 150L
 
         /** 按钮名称限长规则：含中文 ≤2 字，纯英文/数字 ≤3 字符 */
         private fun quickNameMaxLength(text: CharSequence): Int =
@@ -112,7 +120,24 @@ class QuickClickService : Service() {
 
     // 当前按钮列表来自哪个脚本（从脚本管理加载后记录，保存时预填名称）
     private var currentScriptName: String? = null
+    /** 最近一次保存/加载时的按钮快照，用于判断关闭前是否有未保存的改动 */
+    private var savedSnapshot: List<QuickClickConfig>? = null
     private val lastClickAt = mutableMapOf<String, Long>()
+
+    /** 图像识别执行用的主线程 Handler（截图调度、重试、结果回主线程） */
+    private val matchHandler = Handler(Looper.getMainLooper())
+    /** 模板匹配工作线程：全屏 NCC 计算不能占用主线程，否则会卡 UI / ANR */
+    private val matchExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    /** 同一时刻只允许一条「截图 → 匹配」链路，避免并发截图互相干扰 */
+    private var matchInProgress = false
+    /** 服务已销毁标记：异步匹配回调回来时不再执行点击 */
+    private var destroyed = false
+    /** 当前正在显示的模板截图框选浮层，确定/返回键取消后清空 */
+    private var captureOverlay: RegionCaptureOverlay? = null
+    /** 请求截图后、浮层出现前的等待期（防止连点重复截屏） */
+    private var capturePending = false
+    /** 当前正在显示的坐标拾取浮层 */
+    private var pickOverlay: CoordinatePickOverlay? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -126,15 +151,16 @@ class QuickClickService : Service() {
         // === 现：ComposeView + Compose 内容 ===
         root = ComposeView(this)
         composeHost.attach(root)   // 注入生命周期宿主，否则 setContent 会抛异常
+        root.alpha = QuickClickStore.getWindowAlpha(this)   // 恢复上次保存的不透明度
         root.setContent {
             AutoClickerTheme {
                 QuickFloatingContent(
                     state = ui,
                     onMainTouch = { event -> onMainTouch(event) },
                     onAdd = { showConfigDialog() },
-                    onRemoveLast = { removeLastConfig() },
                     onOpenSettings = { showScriptManagerDialog() },
-                    onExitEdit = { exitEditMode() },
+                    onOpenOpacity = { showOpacityDialog() },
+                    onCloseWindow = { requestCloseWindow() },
                     onChildClick = { cfg -> onChildClicked(cfg) },
                     onChildTouch = { index, event -> onChildTouch(index, event) },
                     onExpandedPositioned = { top -> expandedTopInRoot = top },
@@ -186,9 +212,19 @@ class QuickClickService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        destroyed = true
         // 通知 Activity 服务已停止
         sendBroadcast(Intent("com.hpu.autoclicker.SERVICE_STOPPED"))
         dragHandler.removeCallbacksAndMessages(null)
+        matchHandler.removeCallbacksAndMessages(null)
+        matchExecutor.shutdownNow()
+        captureOverlay?.dismiss()
+        captureOverlay = null
+        capturePending = false
+        pickOverlay?.dismiss()
+        pickOverlay = null
+        // 相册中转 Activity 若仍在前台，丢弃回调，避免回到已销毁的服务
+        ImagePickActivity.pendingResult = null
         if (rootAdded) {
             try {
                 windowManager.removeView(root)
@@ -329,24 +365,109 @@ class QuickClickService : Service() {
         }
     }
 
-    /** 旧功能式“-”：删除最后一个子按钮 */
-    private fun removeLastConfig() {
-        if (configs.isEmpty()) {
-            Toast.makeText(this, "没有可删除的按钮", Toast.LENGTH_SHORT).show()
+    // ==================== 关闭悬浮窗 / 透明度 ====================
+
+    /** 与最近一次保存/加载的快照对比，判断是否有未保存的按钮改动 */
+    private fun hasUnsavedButtons(): Boolean =
+        configs.isNotEmpty() && configs.toList() != savedSnapshot
+
+    /** “关闭”（X）：无未保存按钮直接关闭；否则先询问是否保存 */
+    private fun requestCloseWindow() {
+        if (!hasUnsavedButtons()) {
+            stopSelf()
             return
         }
-        val removed = configs.removeAt(configs.size - 1)
-        clampWindowY()
-        Toast.makeText(this, "已删除「${removed.name}」", Toast.LENGTH_SHORT).show()
+        AlertDialog.Builder(this)
+            .setTitle("关闭悬浮窗")
+            .setMessage("当前有未保存的按钮，关闭前是否保存？")
+            .setPositiveButton("保存并关闭") { _, _ -> saveAndClose() }
+            .setNeutralButton("不保存关闭") { _, _ -> stopSelf() }
+            .setNegativeButton("取消", null)
+            .create()
+            .also { showOverlayDialog(it) }
     }
 
-    // ==================== 子按钮长按拖动排序 ====================
+    /**
+     * 保存当前按钮后关闭：已有脚本名直接覆盖保存；
+     * 未命名/新建的列表先弹框输入脚本名（同名需二次确认），取消输入则不关闭。
+     */
+    private fun saveAndClose() {
+        val existingName = currentScriptName
+        if (existingName != null) {
+            QuickClickStore.saveScript(this, existingName, configs)
+            savedSnapshot = configs.toList()
+            Toast.makeText(this, "已保存脚本「$existingName」", Toast.LENGTH_SHORT).show()
+            stopSelf()
+            return
+        }
+        showInputDialog("保存脚本", "", "输入脚本名称", 12) { scriptName ->
+            val save: () -> Unit = {
+                QuickClickStore.saveScript(this, scriptName, configs)
+                currentScriptName = scriptName
+                savedSnapshot = configs.toList()
+                Toast.makeText(this, "已保存脚本「$scriptName」", Toast.LENGTH_SHORT).show()
+                stopSelf()
+            }
+            if (QuickClickStore.loadScripts(this).any { it.name == scriptName }) {
+                confirmOverwrite(scriptName, save)
+            } else {
+                save()
+            }
+        }
+    }
+
+    /**
+     * 透明度弹框：滑块拖动实时改 root.alpha（立即看到效果），
+     * 「确定」写回 SharedPreferences 供下次启动恢复，「取消」/返回键恢复打开前的值。
+     */
+    private fun showOpacityDialog() {
+        try {
+            val previousAlpha = root.alpha
+            val state = OpacityDialogState().apply { alpha = previousAlpha }
+            var confirmed = false
+            val host = ServiceComposeHost()
+            val content = ComposeView(this)
+            host.attach(content)
+            content.setContent {
+                AutoClickerTheme {
+                    OpacityDialogContent(
+                        state = state,
+                        onAlphaChange = { root.alpha = it },
+                    )
+                }
+            }
+            val dialog = AlertDialog.Builder(this)
+                .setTitle("悬浮窗透明度")
+                .setView(content)
+                .setPositiveButton("确定", null)
+                .setNegativeButton("取消", null)
+                .create()
+            dialog.window?.decorView?.let { host.attachWindowRoot(it) }
+            dialog.setOnShowListener {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    confirmed = true
+                    QuickClickStore.setWindowAlpha(this, state.alpha)
+                    dialog.dismiss()
+                }
+            }
+            dialog.setOnDismissListener {
+                if (!confirmed) root.alpha = previousAlpha
+                host.destroy()
+            }
+            showOverlayDialog(dialog, widthRatio = 0.85f)
+        } catch (e: Exception) {
+            android.util.Log.e("QuickClick", "打开透明度弹框失败", e)
+        }
+    }
+
+    // ==================== 子按钮点击编辑 / 长按拖动排序 ====================
 
     /**
      * 编辑态子按钮触摸（由 Compose pointerInteropFilter 回调）：
-     * 长按（默认 500ms）进入拖动，未长按则忽略（编辑态不触发点击）。
-     * 与原实现的区别：排序结果直接写回 ui.configs（原先是移动子 View 后再回写），
-     * 因此不再需要 syncConfigsFromViews()。
+     * - 普通点击：打开「编辑快捷按钮」弹框（内含删除），与新建共用同一套表单；
+     * - 长按后移动：拖动排序（长按原地松手不再触发编辑，避免与点击重复打开弹框）。
+     * 未达长按时长的普通点击在非编辑态交给 [onChildClicked] 执行识别/点击。
+     * 排序结果直接写回 ui.configs，因此不需要 syncConfigsFromViews()。
      */
     private fun onChildTouch(index: Int, event: MotionEvent): Boolean = when (event.actionMasked) {
         MotionEvent.ACTION_DOWN -> {
@@ -369,11 +490,13 @@ class QuickClickService : Service() {
             val dx = event.rawX - dragStartRawX
             val dy = event.rawY - dragStartRawY
             if (!dragActive && !dragMoved && dx * dx + dy * dy > touchSlop * touchSlop) {
-                dragMoved = true                   // 一移动就取消长按/拖动判定
+                dragMoved = true                   // 一移动就取消长按/拖动判定，本次手势不当作点击
                 ui.pressedChildIndex = -1
                 dragStartRunnable?.let { dragHandler.removeCallbacks(it) }
             }
-            if (dragActive) performChildDrag(event)
+            if (dragActive) {
+                performChildDrag(event)
+            }
             true
         }
         MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -384,6 +507,9 @@ class QuickClickService : Service() {
                 ui.dragOffsetY = 0f
                 ui.draggingConfig = null
                 clampWindowY()                     // 落位后校正窗口位置（列表顺序已同步）
+            } else if (!dragMoved && event.actionMasked == MotionEvent.ACTION_UP) {
+                // 编辑态点击：打开该子按钮的修改/删除弹框
+                configs.getOrNull(dragIndex)?.let { showConfigDialog(it) }
             }
             dragActive = false
             dragMoved = false
@@ -395,7 +521,7 @@ class QuickClickService : Service() {
 
     /**
      * 拖动排序核心：子按钮跟随手指上下移动，中心越过相邻子按钮时交换位置；
-     * 子按钮区间即为 configs 全部元素（UI 上它们始终位于 + 和 - 之间）
+     * 子按钮区间即为 configs 全部元素（UI 上它们始终位于 + 之下）
      */
     private fun performChildDrag(event: MotionEvent) {
         val idx = dragIndex
@@ -440,8 +566,36 @@ class QuickClickService : Service() {
 
         when (cfg.type) {
             QuickClickConfig.TYPE_TEXT -> executeTextClick(cfg)
-            QuickClickConfig.TYPE_IMAGE -> Toast.makeText(this, "图像识别即将支持", Toast.LENGTH_SHORT).show()
-            QuickClickConfig.TYPE_COORD -> Toast.makeText(this, "坐标点击即将支持", Toast.LENGTH_SHORT).show()
+            QuickClickConfig.TYPE_IMAGE -> executeImageClick(cfg)
+            QuickClickConfig.TYPE_COORD -> executeCoordinateClick(cfg)
+        }
+    }
+
+    /** 坐标点击：直接把配置里的屏幕绝对坐标交给无障碍服务点击 */
+    private fun executeCoordinateClick(cfg: QuickClickConfig) {
+        val svc = AutoClickerAccessibilityService.instance
+        if (svc == null) {
+            setMainAvailable(false)
+            Toast.makeText(this, "无障碍服务未连接，请到系统设置重新开启", Toast.LENGTH_LONG).show()
+            return
+        }
+        performClickAt(svc, cfg.x, cfg.y, cfg.autoCollapse)
+    }
+
+    /** 统一点击出口：duration 取全局设置，成功后按需自动收起悬浮窗 */
+    private fun performClickAt(
+        svc: AutoClickerAccessibilityService,
+        x: Float,
+        y: Float,
+        autoCollapse: Boolean,
+    ) {
+        val duration = QuickClickStore.getClickDuration(this).toLong()
+        svc.performClick(x, y, duration) { ok ->
+            if (!ok) {
+                Toast.makeText(this, "点击被系统取消（可能被 ROM 拦截）", Toast.LENGTH_SHORT).show()
+            } else if (autoCollapse) {
+                collapse()   // 点击后自动收起悬浮窗
+            }
         }
     }
 
@@ -467,14 +621,7 @@ class QuickClickService : Service() {
             }
 
             // 坐标用屏幕绝对坐标（findTargetByText 返回 getBoundsInScreen 中心点）
-            val duration = QuickClickStore.getClickDuration(this).toLong()
-            svc.performClick(pt.x, pt.y, duration) { ok ->
-                if (!ok) {
-                    Toast.makeText(this, "点击被系统取消（可能被 ROM 拦截）", Toast.LENGTH_SHORT).show()
-                } else if (cfg.autoCollapse) {
-                    collapse()   // 点击后自动收起悬浮窗
-                }
-            }
+            performClickAt(svc, pt.x, pt.y, cfg.autoCollapse)
         } catch (e: Exception) {
             android.util.Log.e("QuickClick", "点击链路异常", e)
             Toast.makeText(this, "执行失败，请重试", Toast.LENGTH_SHORT).show()
@@ -486,14 +633,352 @@ class QuickClickService : Service() {
         ui.mainAlpha = if (available) 1f else 0.4f
     }
 
-    // ==================== “+”新建配置弹框 ====================
+    // ==================== 图像识别：截图捕获 / 相册选图 / 匹配点击 ====================
 
-    /** “+”弹框：填写必要设置 → 点“新建”→ 实体化到 + 和 - 之间 */
-    private fun showConfigDialog() {
+    /**
+     * 隐藏悬浮窗自身，避免出现在截图里，或被系统相册等页面遮挡触摸。
+     * 仅设 INVISIBLE 不够：窗口仍在，触摸仍可能落到它覆盖的区域。
+     */
+    private fun hideSelfForScreenshot() {
+        if (!rootAdded) return
+        root.visibility = View.INVISIBLE
+        lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        try {
+            windowManager.updateViewLayout(root, lp)
+        } catch (e: Exception) {
+            android.util.Log.e("QuickClick", "隐藏悬浮窗失败", e)
+        }
+    }
+
+    private fun showSelfAfterScreenshot() {
+        if (!rootAdded) return
+        lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        try {
+            windowManager.updateViewLayout(root, lp)
+        } catch (e: Exception) {
+            android.util.Log.e("QuickClick", "恢复悬浮窗失败", e)
+        }
+        root.visibility = View.VISIBLE
+    }
+
+    /**
+     * 截屏/选图期间隐藏「配置弹框」：弹框是独立窗口，仅隐藏悬浮窗时它会被截进模板图，
+     * 也会盖在系统相册上方挡住点击。隐藏时同时置为不可触摸，否则不可见窗口仍可能吞触摸。
+     */
+    private fun hideConfigForCapture(dialog: AlertDialog?) {
+        val window = dialog?.window ?: return
+        try {
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .hideSoftInputFromWindow(window.decorView.windowToken, 0)
+        } catch (_: Exception) {
+        }
+        window.decorView.visibility = View.INVISIBLE
+        // 不可触摸 + 不可聚焦：否则隐藏的弹框仍会抢相册的按键焦点/吞触摸
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        )
+    }
+
+    private fun showConfigAfterCapture(dialog: AlertDialog?) {
+        val window = dialog?.window ?: return
+        window.decorView.visibility = View.VISIBLE
+        window.clearFlags(
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        )
+    }
+
+    /** 截图/选图结束：恢复悬浮窗与配置弹框 */
+    private fun restoreAfterCapture(dialog: AlertDialog?) {
+        showConfigAfterCapture(dialog)
+        showSelfAfterScreenshot()
+    }
+
+    /** 「屏幕截图」：截当前屏 → 全屏区域选择器框选 → 存图并回填表单 */
+    private fun startScreenshotCapture(form: QuickConfigFormState, dialog: AlertDialog?) {
+        val svc = AutoClickerAccessibilityService.instance
+        if (svc == null || !svc.isScreenshotSupported()) {
+            Toast.makeText(this, "屏幕截图需 Android 11 及以上且无障碍已连接", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (capturePending || captureOverlay != null) return
+        capturePending = true
+        hideSelfForScreenshot()
+        hideConfigForCapture(dialog)
+        // 淡出/隐藏需要一帧以上才真正反映到截图中，否则悬浮窗或弹框会残留在模板里
+        matchHandler.postDelayed({
+            if (destroyed) {
+                capturePending = false
+                return@postDelayed
+            }
+            svc.takeScreenshotAsync { screen ->
+                capturePending = false
+                if (screen == null) {
+                    restoreAfterCapture(dialog)
+                    Toast.makeText(this, "截图失败，请重试", Toast.LENGTH_SHORT).show()
+                    return@takeScreenshotAsync
+                }
+                val overlay = RegionCaptureOverlay(this, object : RegionCaptureOverlay.ResultListener {
+                    override fun onConfirm(cropped: android.graphics.Bitmap, regionInScreen: android.graphics.Rect) {
+                        val name = ImageStore.generateFileName("shot")
+                        if (ImageStore.saveImage(this@QuickClickService, cropped, name)) {
+                            form.imageFileName = name
+                            form.type = QuickClickConfig.TYPE_IMAGE
+                            form.imageRegionRect =
+                                "${regionInScreen.left},${regionInScreen.top},${regionInScreen.right},${regionInScreen.bottom}"
+                            Toast.makeText(this@QuickClickService, "已截取模板图", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(this@QuickClickService, "保存截图失败", Toast.LENGTH_SHORT).show()
+                        }
+                        captureOverlay = null
+                        restoreAfterCapture(dialog)
+                    }
+
+                    override fun onCancel() {
+                        captureOverlay = null
+                        restoreAfterCapture(dialog)
+                    }
+                })
+                captureOverlay = overlay
+                overlay.show(screen)
+                // 框选浮层覆盖全屏，弹框/悬浮窗保持隐藏到确定或返回键取消后再恢复
+            }
+        }, HIDE_BEFORE_SCREENSHOT_MS)
+    }
+
+    /** 「屏幕取点」：全屏置灰网格浮层 → 点选位置 → 回填 X/Y（触摸不会穿透到下层应用） */
+    private fun startCoordinatePick(form: QuickConfigFormState, dialog: AlertDialog?) {
+        pickOverlay?.dismiss()
+        hideSelfForScreenshot()
+        hideConfigForCapture(dialog)
+        val overlay = CoordinatePickOverlay(this, object : CoordinatePickOverlay.Listener {
+            override fun onPicked(x: Int, y: Int) {
+                pickOverlay = null
+                form.type = QuickClickConfig.TYPE_COORD
+                form.coordXText = x.toString()
+                form.coordYText = y.toString()
+                restoreAfterCapture(dialog)
+            }
+
+            override fun onCancel() {
+                pickOverlay = null
+                restoreAfterCapture(dialog)
+            }
+        })
+        pickOverlay = overlay
+        overlay.show()
+    }
+
+    /**
+     * 「从相册选」：先隐藏悬浮窗与弹框（它们是系统级浮层，会盖住相册并挡住点击），
+     * 再拉起透明中转 Activity 选图 + 裁剪；取消、返回、选图完成后都回到配置弹框。
+     */
+    private fun startGalleryPick(form: QuickConfigFormState, dialog: AlertDialog?) {
+        if (capturePending || captureOverlay != null) return
+        capturePending = true
+        hideSelfForScreenshot()
+        hideConfigForCapture(dialog)
+        ImagePickActivity.pendingResult = { fileName, _, _ ->
+            capturePending = false
+            restoreAfterCapture(dialog)
+            if (fileName != null) {
+                form.imageFileName = fileName
+                form.type = QuickClickConfig.TYPE_IMAGE
+                // 相册图无屏幕框选坐标，匹配退回全屏
+                form.imageRegionRect = ""
+                Toast.makeText(this, "已选择模板图", Toast.LENGTH_SHORT).show()
+            }
+        }
+        try {
+            startActivity(
+                Intent(this, ImagePickActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("QuickClick", "拉起选图失败", e)
+            capturePending = false
+            ImagePickActivity.pendingResult = null
+            restoreAfterCapture(dialog)
+            Toast.makeText(this, "无法打开相册选择", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** 图像识别点击：截屏 → 匹配模板 → dispatchGesture 点击中心；未找到按参数重试 */
+    private fun executeImageClick(cfg: QuickClickConfig) {
+        val svc = AutoClickerAccessibilityService.instance
+        if (svc == null) {
+            setMainAvailable(false)
+            Toast.makeText(this, "无障碍服务未连接，请到系统设置重新开启", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!svc.isScreenshotSupported()) {
+            Toast.makeText(this, "图像识别需 Android 11 及以上", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (matchInProgress) {
+            Toast.makeText(this, "正在识别，请稍候", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val template = ImageStore.loadImage(this, cfg.imageFileName)
+        if (template == null) {
+            Toast.makeText(this, "模板图片缺失，请重新编辑选择", Toast.LENGTH_SHORT).show()
+            return
+        }
+        matchInProgress = true
+        tryMatch(svc, cfg, template, parseRegionRect(cfg.imageRegionRect), attempt = 0)
+    }
+
+    /**
+     * 单次「隐藏悬浮窗 → 截屏 → 后台匹配」。
+     * 匹配放在 [matchExecutor] 上执行，避免全屏 NCC 计算阻塞主线程；
+     * 结果再回到主线程做点击/重试。
+     */
+    private fun tryMatch(
+        svc: AutoClickerAccessibilityService,
+        cfg: QuickClickConfig,
+        template: android.graphics.Bitmap,
+        region: android.graphics.Rect?,
+        attempt: Int,
+    ) {
+        hideSelfForScreenshot()
+        matchHandler.postDelayed({
+            svc.takeScreenshotAsync { screen ->
+                showSelfAfterScreenshot()
+                if (screen == null) {
+                    onMatchFailed(svc, cfg, template, region, attempt, "截屏失败，请重试")
+                    return@takeScreenshotAsync
+                }
+                matchExecutor.execute {
+                    val result = try {
+                        if (cfg.imageRegion == "last" && region != null) {
+                            ImageMatcher.matchInRegion(
+                                screen, template,
+                                region = region,
+                                threshold = cfg.imageThreshold,
+                                scale = cfg.imageScale,
+                                grayMode = cfg.imageGrayMode,
+                            )
+                        } else {
+                            ImageMatcher.match(
+                                screen, template,
+                                threshold = cfg.imageThreshold,
+                                scale = cfg.imageScale,
+                                grayMode = cfg.imageGrayMode,
+                            )
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("QuickClick", "模板匹配异常", e)
+                        ImageMatcher.MatchResult(0f, android.graphics.PointF(0f, 0f))
+                    } finally {
+                        screen.recycle()
+                    }
+                    matchHandler.post { onMatchResult(svc, cfg, template, region, attempt, result) }
+                }
+            }
+        }, HIDE_BEFORE_SCREENSHOT_MS)
+    }
+
+    private fun onMatchResult(
+        svc: AutoClickerAccessibilityService,
+        cfg: QuickClickConfig,
+        template: android.graphics.Bitmap,
+        region: android.graphics.Rect?,
+        attempt: Int,
+        result: ImageMatcher.MatchResult,
+    ) {
+        if (destroyed || svc !== AutoClickerAccessibilityService.instance) {
+            finishImageMatch(template)
+            return
+        }
+        if (result.confidence >= cfg.imageThreshold) {
+            finishImageMatch(template)
+            performClickAt(svc, result.point.x, result.point.y, cfg.autoCollapse)
+        } else {
+            onMatchFailed(
+                svc, cfg, template, region, attempt,
+                "未匹配到目标图片（最高相似度 ${"%.2f".format(result.confidence)}）",
+            )
+        }
+    }
+
+    /** 单次失败：未用尽重试次数则重新截屏匹配，否则提示并释放模板图 */
+    private fun onMatchFailed(
+        svc: AutoClickerAccessibilityService,
+        cfg: QuickClickConfig,
+        template: android.graphics.Bitmap,
+        region: android.graphics.Rect?,
+        attempt: Int,
+        message: String,
+    ) {
+        if (destroyed) {
+            finishImageMatch(template)
+            return
+        }
+        if (attempt < cfg.imageRetryCount) {
+            matchHandler.postDelayed(
+                { tryMatch(svc, cfg, template, region, attempt + 1) },
+                cfg.imageRetryDelay,
+            )
+        } else {
+            finishImageMatch(template)
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** 结束一次识别链路：释放模板图并解除并发锁 */
+    private fun finishImageMatch(template: android.graphics.Bitmap) {
+        matchInProgress = false
+        if (!template.isRecycled) template.recycle()
+    }
+
+    private fun parseRegionRect(s: String): android.graphics.Rect? {
+        val parts = s.split(",")
+        if (parts.size != 4) return null
+        val l = parts[0].toIntOrNull() ?: return null
+        val t = parts[1].toIntOrNull() ?: return null
+        val r = parts[2].toIntOrNull() ?: return null
+        val b = parts[3].toIntOrNull() ?: return null
+        return android.graphics.Rect(l, t, r, b)
+    }
+
+    // ==================== “+”新建 / 点击编辑 配置弹框 ====================
+
+    /**
+     * 配置弹框。[editTarget] 为 null 时是「+」新建：填表后追加到列表末尾；
+     * 传入已有配置时是点击编辑：表单回填名称/目标文字/自动收起，确认后原地替换（保持顺序）。
+     */
+    private fun showConfigDialog(editTarget: QuickClickConfig? = null) {
         try {
             // === 原：inflate(dialog_quick_click_config.xml) + findViewById 取值 ===
             // === 现：ComposeView + QuickConfigDialogContent，取值改为读写表单状态 ===
-            val form = QuickConfigFormState()
+            val form = QuickConfigFormState().apply {
+                if (editTarget != null) {
+                    name = editTarget.name
+                    targetText = editTarget.text
+                    autoCollapse = editTarget.autoCollapse
+                    type = editTarget.type
+                    coordXText = if (editTarget.type == QuickClickConfig.TYPE_COORD) {
+                        editTarget.x.toInt().toString()
+                    } else ""
+                    coordYText = if (editTarget.type == QuickClickConfig.TYPE_COORD) {
+                        editTarget.y.toInt().toString()
+                    } else ""
+                    imageFileName = editTarget.imageFileName
+                    imageRegionRect = editTarget.imageRegionRect
+                    thresholdText = editTarget.imageThreshold.toString()
+                    scaleText = editTarget.imageScale.toString()
+                    regionFull = editTarget.imageRegion != "last"
+                    grayMode = editTarget.imageGrayMode
+                    retryText = editTarget.imageRetryCount.toString()
+                    retryDelayText = editTarget.imageRetryDelay.toString()
+                    // 编辑图像按钮时默认展开高级设置，便于直接调参
+                    if (editTarget.type == QuickClickConfig.TYPE_IMAGE) showAdvanced = true
+                }
+            }
+            // 弹框实例需在 Compose 内容之前声明：截图/取点回调要先隐藏弹框窗口
+            var dialogRef: AlertDialog? = null
+            var committed = false
             val host = ServiceComposeHost()
             val content = ComposeView(this)
             host.attach(content)
@@ -502,16 +987,29 @@ class QuickClickService : Service() {
                     QuickConfigDialogContent(
                         state = form,
                         nameFilter = ::limitQuickName,   // 名称限长：含中文 ≤2 字、纯英文/数字 ≤3 字符
+                        screenshotSupported = AutoClickerAccessibilityService.instance
+                            ?.isScreenshotSupported() == true,
+                        onCaptureScreenshot = { startScreenshotCapture(form, dialogRef) },
+                        onPickFromGallery = { startGalleryPick(form, dialogRef) },
+                        onPickCoordinate = { startCoordinatePick(form, dialogRef) },
+                        screenWidth = getScreenWidth(),
+                        screenHeight = getScreenHeight(),
                     )
                 }
             }
 
-            val dialog = AlertDialog.Builder(this)
-                .setTitle("新建快捷按钮")
+            val isEdit = editTarget != null
+            val builder = AlertDialog.Builder(this)
+                .setTitle(if (isEdit) "编辑快捷按钮" else "新建快捷按钮")
                 .setView(content)
-                .setPositiveButton("新建", null)
+                .setPositiveButton(if (isEdit) "保存" else "新建", null)
                 .setNegativeButton("取消", null)
-                .create()
+            // 仅编辑弹框提供「删除」：点击后直接移除该子按钮并同步列表
+            if (editTarget != null) {
+                builder.setNeutralButton("删除", null)
+            }
+            val dialog = builder.create()
+            dialogRef = dialog
 
             // 关键：把宿主 Owner 也挂到对话框窗口的 DecorView 上，且必须在 show() 之前。
             // 对话框内 ComposeView 的窗口 Recomposer 是从 AlertDialogLayout 往上找 Owner 的，
@@ -519,31 +1017,145 @@ class QuickClickService : Service() {
             dialog.window?.decorView?.let { host.attachWindowRoot(it) }
 
             dialog.setOnShowListener {
-                // 手动接管新建按钮：校验不通过时不关闭弹窗
+                // 手动接管确认按钮：校验不通过时不关闭弹窗
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                    val text = form.targetText.trim()
-                    if (text.isEmpty()) {
-                        Toast.makeText(this, "请输入目标文字", Toast.LENGTH_SHORT).show()
-                        return@setOnClickListener
-                    }
                     val name = limitQuickName(
-                        form.name.trim().ifEmpty { "按钮${configs.size + 1}" }
+                        form.name.trim().ifEmpty {
+                            // 编辑时清空名称 → 保留原名；新建时清空 → 「按钮N」
+                            editTarget?.name ?: "按钮${configs.size + 1}"
+                        }
                     )
-                    // 新按钮插到列表末尾：编辑态视图中即位于 + 和 - 之间
-                    configs.add(
-                        QuickClickConfig(
-                            name = name,
-                            type = QuickClickConfig.TYPE_TEXT,
-                            text = text,
-                            autoCollapse = form.autoCollapse
-                        )
-                    )
-                    clampWindowY()
-                    Toast.makeText(this, "已新建「$name」", Toast.LENGTH_SHORT).show()
+                    val newConfig = when (form.type) {
+                        QuickClickConfig.TYPE_IMAGE -> {
+                            if (form.imageFileName.isEmpty()) {
+                                Toast.makeText(this, "请先截图或从相册选择模板图片", Toast.LENGTH_SHORT).show()
+                                return@setOnClickListener
+                            }
+                            QuickClickConfig(
+                                name = name,
+                                type = QuickClickConfig.TYPE_IMAGE,
+                                autoCollapse = form.autoCollapse,
+                                imageFileName = form.imageFileName,
+                                imageThreshold = form.thresholdOrDefault(),
+                                imageScale = form.scaleOrDefault(),
+                                imageRegion = if (form.regionFull) "full" else "last",
+                                imageGrayMode = form.grayMode,
+                                imageRetryCount = form.retryOrDefault(),
+                                imageRetryDelay = form.retryDelayOrDefault(),
+                                imageRegionRect = form.imageRegionRect,
+                            )
+                        }
+                        QuickClickConfig.TYPE_COORD -> {
+                            val x = form.coordXText.trim().toIntOrNull()
+                            val y = form.coordYText.trim().toIntOrNull()
+                            if (x == null || y == null) {
+                                Toast.makeText(this, "请输入有效的屏幕坐标", Toast.LENGTH_SHORT).show()
+                                return@setOnClickListener
+                            }
+                            val screenW = getScreenWidth()
+                            val screenH = getScreenHeight()
+                            if (x !in 0 until screenW || y !in 0 until screenH) {
+                                Toast.makeText(
+                                    this,
+                                    "坐标需在屏幕范围内（0~${screenW - 1} / 0~${screenH - 1}）",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                                return@setOnClickListener
+                            }
+                            QuickClickConfig(
+                                name = name,
+                                type = QuickClickConfig.TYPE_COORD,
+                                x = x.toFloat(),
+                                y = y.toFloat(),
+                                autoCollapse = form.autoCollapse,
+                            )
+                        }
+                        else -> {
+                            val text = form.targetText.trim()
+                            if (text.isEmpty()) {
+                                Toast.makeText(this, "请输入目标文字", Toast.LENGTH_SHORT).show()
+                                return@setOnClickListener
+                            }
+                            QuickClickConfig(
+                                name = name,
+                                type = QuickClickConfig.TYPE_TEXT,
+                                text = text,
+                                autoCollapse = form.autoCollapse,
+                            )
+                        }
+                    }
+
+                    // 清理不再被任何按钮引用的模板图：换图时删旧图；改类型后删临时新图
+                    val oldImage = editTarget?.takeIf { it.type == QuickClickConfig.TYPE_IMAGE }
+                        ?.imageFileName.orEmpty()
+                    if (oldImage.isNotEmpty() &&
+                        (newConfig.type != QuickClickConfig.TYPE_IMAGE || newConfig.imageFileName != oldImage)
+                    ) {
+                        ImageStore.deleteImage(this, oldImage)
+                    }
+                    if (form.imageFileName.isNotEmpty() &&
+                        newConfig.type != QuickClickConfig.TYPE_IMAGE &&
+                        form.imageFileName != oldImage
+                    ) {
+                        ImageStore.deleteImage(this, form.imageFileName)
+                    }
+
+                    if (editTarget != null) {
+                        // 按引用定位原条目，原地替换保持顺序
+                        val idx = configs.indexOfFirst { it === editTarget }
+                        if (idx >= 0) configs[idx] = newConfig
+                        Toast.makeText(this, "已更新「$name」", Toast.LENGTH_SHORT).show()
+                    } else {
+                        // 新按钮插到列表末尾：编辑态视图中即位于 + 之后
+                        configs.add(newConfig)
+                        clampWindowY()
+                        Toast.makeText(this, "已新建「$name」", Toast.LENGTH_SHORT).show()
+                    }
+                    committed = true
                     dialog.dismiss()
                 }
+                // 「删除」：立即从列表移除该按钮（mutableStateListOf 自动同步悬浮窗），无需再点保存
+                if (editTarget != null) {
+                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                        // 二次确认（覆盖在编辑弹框之上，与脚本删除确认同一路径）：
+                        // 确认 → 移除按钮并连同编辑弹框一起关闭；取消 → 仅关确认框，编辑弹框保留
+                        AlertDialog.Builder(this)
+                            .setTitle("删除按钮")
+                            .setMessage("确定删除按钮「${editTarget.name}」？")
+                            .setPositiveButton("删除") { _, _ ->
+                                val idx = configs.indexOfFirst { it === editTarget }
+                                if (idx >= 0) configs.removeAt(idx)
+                                // 删除图像按钮时清理其模板图（含本次新截但尚未保存的图）
+                                val oldImage = editTarget.imageFileName
+                                if (editTarget.type == QuickClickConfig.TYPE_IMAGE && oldImage.isNotEmpty()) {
+                                    ImageStore.deleteImage(this, oldImage)
+                                }
+                                if (form.imageFileName.isNotEmpty() && form.imageFileName != oldImage) {
+                                    ImageStore.deleteImage(this, form.imageFileName)
+                                }
+                                committed = true
+                                clampWindowY()
+                                Toast.makeText(this, "已删除「${editTarget.name}」", Toast.LENGTH_SHORT).show()
+                                dialog.dismiss()
+                            }
+                            .setNegativeButton("取消", null)
+                            .create()
+                            .also { showOverlayDialog(it) }
+                    }
+                }
             }
-            dialog.setOnDismissListener { host.destroy() }
+            dialog.setOnDismissListener {
+                host.destroy()
+                // 取消/关闭时清理本次新截取但未保存的模板图
+                if (!committed) {
+                    val pendingImage = form.imageFileName
+                    val originalImage = editTarget?.takeIf { it.type == QuickClickConfig.TYPE_IMAGE }
+                        ?.imageFileName.orEmpty()
+                    if (pendingImage.isNotEmpty() && pendingImage != originalImage) {
+                        ImageStore.deleteImage(this, pendingImage)
+                    }
+                }
+            }
             // Service 弹窗必须挂到悬浮窗层，否则 BadTokenException（与旧功能处理一致）
             showOverlayDialog(dialog)
         } catch (e: Exception) {
@@ -614,12 +1226,14 @@ class QuickClickService : Service() {
                 confirmOverwrite(scriptName) {
                     QuickClickStore.saveScript(this, scriptName, configs)
                     currentScriptName = scriptName
+                    savedSnapshot = configs.toList()
                     Toast.makeText(this, "已覆盖脚本「$scriptName」", Toast.LENGTH_SHORT).show()
                     onChanged()
                 }
             } else {
                 QuickClickStore.saveScript(this, scriptName, configs)
                 currentScriptName = scriptName
+                savedSnapshot = configs.toList()
                 Toast.makeText(this, "已保存脚本「$scriptName」", Toast.LENGTH_SHORT).show()
                 onChanged()
             }
@@ -657,6 +1271,11 @@ class QuickClickService : Service() {
             .setMessage("确定删除脚本「${script.name}」？")
             .setPositiveButton("删除") { _, _ ->
                 QuickClickStore.deleteScript(this, script.name)
+                // 当前列表来自被删脚本：此后视为未保存，关闭悬浮窗时会重新提示保存
+                if (currentScriptName == script.name) {
+                    currentScriptName = null
+                    savedSnapshot = null
+                }
                 onChanged()
                 Toast.makeText(this, "已删除脚本「${script.name}」", Toast.LENGTH_SHORT).show()
             }
@@ -670,6 +1289,7 @@ class QuickClickService : Service() {
         configs.clear()
         configs.addAll(script.configs)
         currentScriptName = script.name
+        savedSnapshot = configs.toList()
         clampWindowY()
         dialog.dismiss()
         Toast.makeText(this, "已加载脚本「${script.name}」", Toast.LENGTH_SHORT).show()

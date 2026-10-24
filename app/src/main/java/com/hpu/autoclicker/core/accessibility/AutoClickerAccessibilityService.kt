@@ -3,6 +3,7 @@ package com.hpu.autoclicker.core.accessibility
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Point
 import android.graphics.PointF
@@ -10,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Display
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -349,5 +351,47 @@ class AutoClickerAccessibilityService : AccessibilityService() {
      */
     fun isServiceEnabled(): Boolean {
         return instance != null
+    }
+
+    /** 截图能力是否可用（依赖无障碍 takeScreenshot，仅 Android 11 / API 30+） */
+    fun isScreenshotSupported(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+
+    /**
+     * 异步截取当前屏幕，结果回调到主线程；失败或不支持时回调 null。
+     * @param onResult 截图 Bitmap（ARGB_8888，可安全像素读取）或 null
+     */
+    fun takeScreenshotAsync(onResult: (Bitmap?) -> Unit) {
+        if (!isScreenshotSupported()) {
+            Log.w(TAG, "takeScreenshot 需要 Android 11(API 30) 及以上")
+            handler.post { onResult(null) }
+            return
+        }
+        try {
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                mainExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        // 硬件缓冲需 close，先转成软件 ARGB Bitmap 供匹配引擎读取
+                        val hwBuffer = screenshot.hardwareBuffer
+                        val bitmap = try {
+                            Bitmap.wrapHardwareBuffer(hwBuffer, screenshot.colorSpace)
+                                ?.copy(Bitmap.Config.ARGB_8888, false)
+                        } finally {
+                            hwBuffer.close()
+                        }
+                        handler.post { onResult(bitmap) }
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        Log.e(TAG, "截图失败 errorCode=$errorCode")
+                        handler.post { onResult(null) }
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "takeScreenshot 调用异常", e)
+            handler.post { onResult(null) }
+        }
     }
 }

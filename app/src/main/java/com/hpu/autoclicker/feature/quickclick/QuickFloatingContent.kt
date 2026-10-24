@@ -49,7 +49,7 @@ class QuickFloatingUiState {
     /** 是否展开（显示主按钮下方的展开区） */
     var isExpanded by mutableStateOf(false)
 
-    /** 是否处于编辑态（展开区显示 [+][-][设置][取消]） */
+    /** 是否处于编辑态（展开区显示 [+][脚本管理][透明度][关闭]） */
     var isEditing by mutableStateOf(false)
 
     /** 无障碍断连时主按钮变灰（1f 正常 / 0.4f 不可用） */
@@ -77,9 +77,9 @@ fun QuickFloatingContent(
     /** 主按钮原始触摸事件（单击/拖动/双击状态机在 Service 内维护） */
     onMainTouch: (MotionEvent) -> Boolean,
     onAdd: () -> Unit,
-    onRemoveLast: () -> Unit,
     onOpenSettings: () -> Unit,
-    onExitEdit: () -> Unit,
+    onOpenOpacity: () -> Unit,
+    onCloseWindow: () -> Unit,
     onChildClick: (QuickClickConfig) -> Unit,
     /** 编辑态子按钮原始触摸事件（长按拖动排序） */
     onChildTouch: (index: Int, event: MotionEvent) -> Boolean,
@@ -117,7 +117,7 @@ fun QuickFloatingContent(
             )
         }
 
-        // 展开区：非编辑态仅子按钮列表；编辑态为 [+] 子按钮列表 [-] [设置] [取消]
+        // 展开区：非编辑态仅子按钮列表；编辑态为 [+] 子按钮列表 [脚本管理][透明度][关闭]
         if (state.isExpanded) {
             Column(
                 // 注意：这里不能加 fillMaxWidth()。悬浮窗是 WRAP_CONTENT，fillMaxWidth 会解析为
@@ -143,16 +143,16 @@ fun QuickFloatingContent(
                     )
                 }
                 if (state.isEditing) {
-                    ControlRow(iconRes = R.drawable.ic_remove, desc = "减少", onClick = onRemoveLast)
-                    ControlRow(iconRes = R.drawable.ic_settings, desc = "设置", onClick = onOpenSettings)
-                    ControlRow(iconRes = R.drawable.ic_exit, desc = "取消", onClick = onExitEdit)
+                    ControlRow(iconRes = R.drawable.ic_folder, desc = "脚本管理", onClick = onOpenSettings)
+                    ControlRow(iconRes = R.drawable.ic_opacity, desc = "透明度", onClick = onOpenOpacity)
+                    ControlRow(iconRes = R.drawable.ic_exit, desc = "关闭", onClick = onCloseWindow)
                 }
             }
         }
     }
 }
 
-/** 编辑态控制行：[+]/[-]/[设置]/[取消]（对应原 buildControlRow） */
+/** 编辑态控制行：[+]/[脚本管理]/[透明度]/[关闭]（对应原 buildControlRow） */
 @Composable
 private fun ControlRow(iconRes: Int, desc: String, onClick: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
@@ -178,7 +178,7 @@ private fun ControlRow(iconRes: Int, desc: String, onClick: () -> Unit) {
     }
 }
 
-/** 子按钮行：非编辑态点击触发识别；编辑态长按可拖动排序（对应原 buildChildRow） */
+/** 子按钮行：非编辑态点击触发识别；编辑态点击打开修改/删除弹框，长按可拖动排序（对应原 buildChildRow） */
 @Composable
 private fun ChildRow(
     cfg: QuickClickConfig,

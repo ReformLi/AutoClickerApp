@@ -53,5 +53,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 相册选图 + 区域裁剪的透明中转 Activity（代点器图像识别用） -->
+        <activity
+            android:name=".feature.quickclick.ImagePickActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 </manifest>
