@@ -148,17 +148,28 @@ fun MainScreen(
             }
 
             // ===== 运行模式 =====
-            AppSectionTitle(
-                text = "运行模式",
-                modifier = Modifier.padding(top = Dimens.sectionGap),
-            )
+            // 标题与「权限与状态」同款（AppSectionTitle）靠左，行尾放当前模式徽标；
+            // 下方分段开关与标题保持小间距成组
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = Dimens.sectionGap),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AppSectionTitle(text = "运行模式")
+                Spacer(Modifier.weight(1f))
+                AppBadge(
+                    text = state.modeName,
+                    tone = AppBadgeTone.Primary,
+                )
+            }
             AppSegmentedControl(
                 options = listOf("连点器", "代点器"),
                 selectedIndex = if (state.isNewMode) 1 else 0,
                 onSelect = { index -> onSwitchMode(index == 1) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = Dimens.blockGap),
+                    .padding(top = Dimens.fieldGap),
             )
 
             // ===== 主操作 =====
@@ -203,7 +214,7 @@ private fun HeroCard(state: MainUiState) {
 
 /** 当前模式的一句话说明 */
 private fun modeDescription(state: MainUiState): String =
-    if (state.isNewMode) "识别文字/图像/坐标后自动点击" else "按点位循环连点"
+    if (state.isNewMode) "识别文字/图像/坐标后进行点击" else "按点位循环连点"
 
 /**
  * 应用图标：表面色圆角容器 + 真实启动图标。
