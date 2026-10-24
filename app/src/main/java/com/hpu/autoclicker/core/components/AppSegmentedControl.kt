@@ -1,6 +1,7 @@
 package com.hpu.autoclicker.core.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -19,7 +20,7 @@ import com.hpu.autoclicker.core.theme.Dimens
 /**
  * 分段单选控件 —— 用于少量互斥选项（如「连点器 / 代点器」模式切换）。
  *
- * 轨道用 [MaterialTheme.colorScheme.surfaceContainerHighest]，选中段填充 primary、文字 onPrimary；
+ * 轨道用 [MaterialTheme.colorScheme.surfaceContainer] + 淡描边，选中段填充 primary、文字 onPrimary；
  * 整行高度 [Dimens.buttonHeight]，每段可点区域均分且 ≥ 触控要求。
  */
 @Composable
@@ -34,7 +35,8 @@ fun AppSegmentedControl(
         modifier = modifier
             .height(Dimens.buttonHeight)
             .clip(MaterialTheme.shapes.small)
-            .background(scheme.surfaceContainerHighest)
+            .background(scheme.surfaceContainer)
+            .border(Dimens.strokeThin, scheme.outlineVariant, MaterialTheme.shapes.small)
             .padding(Dimens.space4),
     ) {
         options.forEachIndexed { index, label ->

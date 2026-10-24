@@ -178,19 +178,26 @@
 
 ### 3.6 主界面（MainActivity）
 
-**功能**：
+**页面结构**（自上而下的分区式布局）：
 
-- 获取权限按钮（未授权红色「获取权限」，已授权绿色「权限已获取」）：依次引导用户开启悬浮窗权限和无障碍服务
-- 刷新状态按钮：重新检测权限与服务状态
-- 模式切换分段开关（连点器 / 代点器）：选择会持久化，下次启动保留；悬浮窗运行中禁止切换并提示先关闭
-- 启动/关闭悬浮窗按钮：未授予全部权限时禁用置灰；运行中显示红色「关闭悬浮窗」，未运行时显示白底蓝字「启动悬浮窗」
-- 状态卡片显示当前权限与悬浮窗运行状态（含当前模式名称）
+| 区域 | 内容 |
+| --- | --- |
+| Hero 卡片 | 应用图标 + 应用名 + 「当前模式 · 模式说明」，品牌色底承载身份信息 |
+| 权限与状态 | 分区标题 + 就绪徽标；卡片内三行状态（悬浮窗权限 / 无障碍服务 / 悬浮窗运行），每行由状态圆点 + 名称 + 状态徽标组成，行间细分隔线 |
+| 获取权限 | **仅在权限未齐备时出现**的实心按钮；权限齐备后由状态卡片说明一切，不再重复按钮 |
+| 运行模式 | 分区标题 + 连点器 / 代点器分段开关，选择结果持久化；悬浮窗运行中禁止切换并提示先关闭 |
+| 底部主操作 | 左侧主按钮（启动 / 关闭悬浮窗，未授权权限时禁用置灰，运行中为红色「关闭悬浮窗」）+ 右侧文字按钮「刷新状态」 |
+
+**视觉规则**：
+
+- 页面底色用 `background`，卡片用 `surface` + 细描边（`outlineVariant`），靠亮度差而非阴影分层
+- 状态用「圆点 + 徽标」表达，避免大块高饱和色块抢占注意力；正常态用中性徽标，成功态用成功色徽标
+- 所有颜色 / 字号 / 圆角 / 间距均取自 `core/theme` 的设计 token，页面禁止硬编码
 
 **广播监听**：
 
 - 当悬浮窗服务被关闭时，收到 `SERVICE_STOPPED` 广播，自动更新界面按钮状态
 
----
 
 ### 3.7 代点器（悬浮快捷点击，QuickClickService）
 
@@ -245,6 +252,48 @@
 > 子按钮的修改与删除统一在「编辑快捷按钮」弹框内完成（编辑态点击子按钮打开），悬浮窗不再提供 `[-]` 删除按钮。
 
 > 脚本管理加载脚本时，若悬浮框上已有未保存的按钮，会先弹出覆盖确认。
+
+---
+
+### 3.8 统一视觉规范（设计系统）
+
+页面与弹框共用一套 token 与通用组件，源码位于 `core/theme` 与 `core/components`。
+
+**配色（`core/theme/Color.kt`）**：
+
+- 品牌主色为「钢青 Teal-Steel」：浅色 `#0F6E7D`，深色 `#5AD1E0`；**显式禁用 Material3 动态取色**，保证跨设备观感一致
+- 中性色与主色同 hue 家族（低饱和青灰），表面层级靠亮度差划分：`background` < `surfaceContainerLow` < `surfaceContainer` < `surfaceContainerHigh` < `surfaceContainerHighest`
+- 卡片为 `surface`（浅色下即白色）+ `outlineVariant` 细描边；深色模式 `surface` 与 `background` 有明确亮度差，卡片不再糊成一片
+- `success` / `warning` / `primaryPressed` 由 `AppSemanticColors` 承载（Material3 ColorScheme 无对应槽位），通过 `AppTheme.colors` 取用
+
+**排版（`core/theme/Type.kt`）**：
+
+| 层级 | 字号 / 字重 | 用途 |
+| --- | --- | --- |
+| headlineSmall | 24sp SemiBold | 页面主标题 |
+| titleLarge / titleMedium / titleSmall | 20 / 17 / 15sp SemiBold | 区块标题、卡片标题 |
+| bodyLarge / bodyMedium / bodySmall | 16 / 15 / 13sp | 正文、列表项、辅助说明 |
+| labelLarge / labelMedium / labelSmall | 15 / 14 / 12sp | 按钮文字、**表单字段标签**、徽标 |
+
+**间距（`core/theme/Dimens.kt`）**：
+
+- 基础阶梯 4 / 8 / 12 / 16 / 24 / 32
+- 语义间距：`screenVMargin`（页面上下留白）、`sectionGap`（分区之间）、`blockGap`（分区内块之间）、`fieldGap`（字段标签与输入框之间）、`cardPaddingLg`、`dialogHPadding` / `dialogVPadding`（弹框内边距）
+
+**通用组件（`core/components`）**：
+
+| 组件 | 说明 |
+| --- | --- |
+| `AppButton` | Filled / Outlined / Text / Danger / Success 五变体，含默认 / 按下 / 禁用 / 加载四态；Outlined 为 `surface` 底 + `outlineVariant` 描边 |
+| `AppCard` | `surface` 底 + 可选细描边，不叠阴影；可点击时带 ripple |
+| `AppText` | `AppTitle` / `AppSectionTitle` / `AppBodyText` / `AppCaption` / `AppFieldLabel`，全部走 `MaterialTheme.typography` |
+| `AppTextField` | 外观走 token；**内核保留原生 `EditText`**（overlay 弹框软键盘硬约束） |
+| `AppSegmentedControl` | 分段单选（模式切换），轨道 `surfaceContainer` 底 + 细描边 |
+| `AppSelection` | `AppRadioButtonRow` / `AppCheckboxRow`，整行可点，触控高度 ≥ 48dp |
+| `AppBadge` | 状态徽标（Primary / Success / Warning / Neutral 四种色调），用于权限与运行状态 |
+| `AppEmptyState` | 列表无内容时的统一占位 |
+
+**XML 侧同步规则**：`res/values/colors.xml` 与 `res/values-night/colors.xml` 与 `Color.kt` 同源，**改色必须两处同步**且浅 / 深两份键对称；主题状态栏与页面背景同色（浅色用深色图标、深色用浅色图标）。
 
 ---
 

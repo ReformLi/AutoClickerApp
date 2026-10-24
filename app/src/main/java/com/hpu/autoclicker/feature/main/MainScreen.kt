@@ -1,15 +1,19 @@
 package com.hpu.autoclicker.feature.main
 
 import android.widget.ImageView
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -19,13 +23,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.viewinterop.AndroidView
 import com.hpu.autoclicker.R
+import com.hpu.autoclicker.core.components.AppBadge
+import com.hpu.autoclicker.core.components.AppBadgeTone
 import com.hpu.autoclicker.core.components.AppBodyText
 import com.hpu.autoclicker.core.components.AppButton
 import com.hpu.autoclicker.core.components.AppButtonVariant
 import com.hpu.autoclicker.core.components.AppCard
 import com.hpu.autoclicker.core.components.AppCaption
 import com.hpu.autoclicker.core.components.AppSegmentedControl
+import com.hpu.autoclicker.core.components.AppSectionTitle
 import com.hpu.autoclicker.core.components.AppTitle
+import com.hpu.autoclicker.core.theme.AppTheme
 import com.hpu.autoclicker.core.theme.Dimens
 
 /**
@@ -48,10 +56,14 @@ data class MainUiState(
 }
 
 /**
- * 主页面（UI 美化：去蓝紫渐变，改为纯色表面 + 品牌色调 Hero 卡片；组件全部 token 化）。
+ * 主页面。
  *
- * 结构（自上而下）：Hero（图标+标题+副标题） → 当前状态卡片 → 获取权限 →
- * 刷新状态 → 连点器/代点器分段开关 → 启动/关闭悬浮窗。
+ * 结构（自上而下，统一的「分区 + 卡片」层次）：
+ * Hero（图标 + 应用名 + 当前模式说明） → 权限与状态（三行状态 + 状态徽标）
+ * → 运行模式（分段开关） → 底部主操作（启动/关闭 + 刷新）。
+ *
+ * 视觉规则：页面底色用 background，卡片用 surface + 细描边，
+ * 状态用「圆点 + 徽标」表达，避免大块高饱和色块抢占注意力。
  */
 @Composable
 fun MainScreen(
@@ -71,86 +83,133 @@ fun MainScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = Dimens.screenHMargin, vertical = Dimens.space24),
+                .padding(horizontal = Dimens.screenHMargin, vertical = Dimens.screenVMargin),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // Hero：品牌色调卡片承载应用身份（替代原全屏渐变）
-            AppCard(
-                modifier = Modifier.fillMaxWidth(),
-                containerColor = scheme.primaryContainer,
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    AppIcon()
-                    AppTitle(
-                        text = stringResource(R.string.app_name),
-                        modifier = Modifier.padding(top = Dimens.space12),
-                        color = scheme.onPrimaryContainer,
-                    )
-                    AppCaption(
-                        text = "轻触悬浮窗即可自动点击",
-                        modifier = Modifier.padding(top = Dimens.space4),
-                        color = scheme.onPrimaryContainer,
-                    )
-                }
-            }
+            HeroCard(state)
 
-            // 当前状态卡片
+            // ===== 权限与状态 =====
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = Dimens.sectionGap),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AppSectionTitle(
+                    text = "权限与状态",
+                    modifier = Modifier.weight(1f),
+                )
+                AppBadge(
+                    text = if (state.allPermissionsGranted) "已就绪" else "待授权",
+                    tone = if (state.allPermissionsGranted) AppBadgeTone.Success else AppBadgeTone.Warning,
+                )
+            }
             AppCard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = Dimens.space24),
+                    .padding(top = Dimens.blockGap),
+                border = BorderStroke(Dimens.strokeThin, scheme.outlineVariant),
             ) {
-                AppCaption(text = "当前状态")
-                AppBodyText(
-                    text = statusText(state),
-                    modifier = Modifier.padding(top = Dimens.space8),
+                StatusRow(
+                    title = "悬浮窗权限",
+                    ok = state.hasOverlayPermission,
+                    okText = "已授权",
+                    badText = "未授权",
+                )
+                StatusDivider()
+                StatusRow(
+                    title = "无障碍服务",
+                    ok = state.hasAccessibilityPermission,
+                    okText = "已开启",
+                    badText = "未开启",
+                )
+                StatusDivider()
+                StatusRow(
+                    title = "悬浮窗运行",
+                    ok = state.isServiceRunning,
+                    okText = "运行中",
+                    badText = "未启动",
+                )
+            }
+            // 权限齐备时不再重复按钮，状态卡片已经说明一切
+            if (!state.allPermissionsGranted) {
+                AppButton(
+                    text = "获取权限",
+                    onClick = onRequestPermission,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = Dimens.blockGap),
+                    variant = AppButtonVariant.Filled,
                 )
             }
 
-            // 获取权限：已具备 → Success 绿态，否则 Danger 红态
-            AppButton(
-                text = if (state.allPermissionsGranted) "权限已获取" else "获取权限",
-                onClick = onRequestPermission,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = Dimens.space24),
-                variant = if (state.allPermissionsGranted) AppButtonVariant.Success else AppButtonVariant.Danger,
+            // ===== 运行模式 =====
+            AppSectionTitle(
+                text = "运行模式",
+                modifier = Modifier.padding(top = Dimens.sectionGap),
             )
-
-            // 刷新状态（次要操作，弱化）
-            AppButton(
-                text = "刷新状态",
-                onClick = onRefresh,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = Dimens.space8),
-                variant = AppButtonVariant.Outlined,
-            )
-
-            // 连点器 / 代点器 分段开关（选择持久化，默认连点器）
             AppSegmentedControl(
                 options = listOf("连点器", "代点器"),
                 selectedIndex = if (state.isNewMode) 1 else 0,
                 onSelect = { index -> onSwitchMode(index == 1) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = Dimens.space24),
+                    .padding(top = Dimens.blockGap),
             )
 
-            // 启动 / 关闭悬浮窗：未授权禁用，运行中红色「关闭」，否则品牌色「启动」
-            ToggleServiceButton(
-                state = state,
-                onClick = onToggleService,
+            // ===== 主操作 =====
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = Dimens.space12),
+                    .padding(top = Dimens.sectionGap),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ToggleServiceButton(
+                    state = state,
+                    onClick = onToggleService,
+                    modifier = Modifier.weight(1f),
+                )
+                AppButton(
+                    text = "刷新状态",
+                    onClick = onRefresh,
+                    modifier = Modifier.padding(start = Dimens.space8),
+                    variant = AppButtonVariant.Text,
+                )
+            }
+        }
+    }
+}
+
+/** Hero 卡片：品牌色底承载应用身份与当前模式说明 */
+@Composable
+private fun HeroCard(state: MainUiState) {
+    val scheme = MaterialTheme.colorScheme
+    AppCard(
+        modifier = Modifier.fillMaxWidth(),
+        containerColor = scheme.primaryContainer,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            AppIcon()
+            AppTitle(
+                text = stringResource(R.string.app_name),
+                modifier = Modifier.padding(top = Dimens.space12),
+                color = scheme.onPrimaryContainer,
+            )
+            AppCaption(
+                text = "${state.modeName} · ${modeDescription(state)}",
+                modifier = Modifier.padding(top = Dimens.space4),
+                color = scheme.onPrimaryContainer,
             )
         }
     }
 }
+
+/** 当前模式的一句话说明 */
+private fun modeDescription(state: MainUiState): String =
+    if (state.isNewMode) "识别文字/图像/坐标后自动点击" else "按点位循环连点"
 
 /**
  * 应用图标：表面色圆角容器 + 真实启动图标。
@@ -164,7 +223,7 @@ private fun AppIcon() {
     val scheme = MaterialTheme.colorScheme
     Box(
         modifier = Modifier
-            .size(Dimens.iconLg + Dimens.iconLg)
+            .size(Dimens.iconLg + Dimens.space32)
             .clip(MaterialTheme.shapes.large)
             .background(scheme.surface)
             .padding(Dimens.space12),
@@ -181,6 +240,50 @@ private fun AppIcon() {
             modifier = Modifier.fillMaxSize(),
         )
     }
+}
+
+/** 状态行：左侧状态圆点 + 名称 + 右侧状态徽标 */
+@Composable
+private fun StatusRow(
+    title: String,
+    ok: Boolean,
+    okText: String,
+    badText: String,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val sem = AppTheme.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = Dimens.space12),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(Dimens.statusDot)
+                .clip(CircleShape)
+                .background(if (ok) sem.success else scheme.outlineVariant),
+        )
+        AppBodyText(
+            text = title,
+            modifier = Modifier
+                .padding(start = Dimens.space12)
+                .weight(1f),
+        )
+        AppBadge(
+            text = if (ok) okText else badText,
+            tone = if (ok) AppBadgeTone.Success else AppBadgeTone.Neutral,
+        )
+    }
+}
+
+/** 状态行之间的细分隔线 */
+@Composable
+private fun StatusDivider() {
+    HorizontalDivider(
+        thickness = Dimens.divider,
+        color = MaterialTheme.colorScheme.outlineVariant,
+    )
 }
 
 /** 启动/关闭悬浮窗按钮：状态派生变体与可用性 */
@@ -211,11 +314,4 @@ private fun ToggleServiceButton(
             variant = AppButtonVariant.Filled,
         )
     }
-}
-
-/** 状态提示文案（按模式区分服务名） */
-private fun statusText(state: MainUiState): String = when {
-    !state.allPermissionsGranted -> "请先获取所有权限"
-    state.isServiceRunning -> "悬浮窗正在运行（${state.modeName}）"
-    else -> "悬浮窗未启动"
 }

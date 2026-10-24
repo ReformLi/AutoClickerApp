@@ -1,11 +1,11 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
     <style name="Base.Theme.AutoClickerApp" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- 统一色板：主色蓝 -->
+        <!-- 统一色板：钢青 -->
         <item name="colorPrimary">@color/primary</item>
         <item name="colorOnPrimary">@color/on_primary</item>
         <item name="colorPrimaryContainer">@color/primary_container</item>
-        <item name="colorOnPrimaryContainer">@color/primary_dark</item>
+        <item name="colorOnPrimaryContainer">@color/on_primary_container</item>
         <item name="colorSecondary">@color/primary</item>
         <item name="colorOnSecondary">@color/on_primary</item>
 
@@ -16,9 +16,9 @@
         <item name="colorOnSurfaceVariant">@color/text_secondary</item>
         <item name="colorOutline">@color/stroke</item>
 
-        <!-- 状态栏与深蓝渐变顶部同色，图标用白色 -->
-        <item name="android:statusBarColor">@color/status_bar_top</item>
-        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+        <!-- 状态栏与页面背景同色，浅底用深色图标 -->
+        <item name="android:statusBarColor">@color/background</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">true</item>
 
         <!-- 全局默认按钮样式 -->
         <item name="materialButtonStyle">@style/ModernButton</item>

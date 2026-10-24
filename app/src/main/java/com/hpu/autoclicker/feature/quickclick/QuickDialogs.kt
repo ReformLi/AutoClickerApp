@@ -35,6 +35,7 @@ import com.hpu.autoclicker.core.components.AppButtonVariant
 import com.hpu.autoclicker.core.components.AppCheckboxRow
 import com.hpu.autoclicker.core.components.AppCaption
 import com.hpu.autoclicker.core.components.AppEmptyState
+import com.hpu.autoclicker.core.components.AppFieldLabel
 import com.hpu.autoclicker.core.components.AppRadioButtonRow
 import com.hpu.autoclicker.core.components.AppTextField
 import com.hpu.autoclicker.core.theme.Dimens
@@ -96,10 +97,10 @@ fun QuickConfigDialogContent(
         modifier = Modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            // 与原 XML 一致的边距：左右 24dp、上 12dp、下 4dp
-            .padding(start = Dimens.dialogHPadding, end = Dimens.dialogHPadding, top = Dimens.space12, bottom = Dimens.space4),
+            // 与原 XML 一致的边距：左右 24dp、上下 16dp
+            .padding(horizontal = Dimens.dialogHPadding, vertical = Dimens.dialogVPadding),
     ) {
-        AppCaption(text = "按钮名称（可选）")
+        AppFieldLabel(text = "按钮名称（可选）")
         AppTextField(
             value = state.name,
             onValueChange = { state.name = nameFilter(it) },
@@ -108,7 +109,7 @@ fun QuickConfigDialogContent(
             maxLength = 10,
         )
 
-        AppCaption(text = "动作类型", modifier = Modifier.padding(top = Dimens.space16))
+        AppFieldLabel(text = "动作类型", modifier = Modifier.padding(top = Dimens.space16))
         Column(modifier = Modifier.padding(top = Dimens.space4)) {
             AppRadioButtonRow(
                 text = "文本匹配",
@@ -141,7 +142,7 @@ fun QuickConfigDialogContent(
                 screenHeight = screenHeight,
             )
             else -> {
-                AppCaption(text = "目标文字", modifier = Modifier.padding(top = Dimens.space16))
+                AppFieldLabel(text = "目标文字", modifier = Modifier.padding(top = Dimens.space16))
                 AppTextField(
                     value = state.targetText,
                     onValueChange = { state.targetText = it },
@@ -171,7 +172,7 @@ private fun ImageRecognitionSection(
     onPickFromGallery: () -> Unit,
     screenshotSupported: Boolean,
 ) {
-    AppCaption(text = "模板图片", modifier = Modifier.padding(top = Dimens.space16))
+    AppFieldLabel(text = "模板图片", modifier = Modifier.padding(top = Dimens.space16))
 
     // 缩略图（已选时显示，点击可重选）
     if (state.imageFileName.isNotEmpty()) {
@@ -228,7 +229,7 @@ private fun ImageRecognitionSection(
             .padding(top = Dimens.space8),
     )
     if (state.showAdvanced) {
-        AppCaption(text = "相似度阈值（0~1，默认 0.85）", modifier = Modifier.padding(top = Dimens.space8))
+        AppFieldLabel(text = "相似度阈值（0~1，默认 0.85）", modifier = Modifier.padding(top = Dimens.space8))
         AppTextField(
             value = state.thresholdText,
             onValueChange = { state.thresholdText = it },
@@ -236,7 +237,7 @@ private fun ImageRecognitionSection(
             hint = "0.85",
             keyboardType = KeyboardType.Number,
         )
-        AppCaption(text = "降采样倍率（1~4，默认 2，越大越快越粗）", modifier = Modifier.padding(top = Dimens.space8))
+        AppFieldLabel(text = "降采样倍率（1~4，默认 2，越大越快越粗）", modifier = Modifier.padding(top = Dimens.space8))
         AppTextField(
             value = state.scaleText,
             onValueChange = { state.scaleText = it },
@@ -244,7 +245,7 @@ private fun ImageRecognitionSection(
             hint = "2",
             keyboardType = KeyboardType.Number,
         )
-        AppCaption(text = "未找到重试次数 / 间隔(ms)", modifier = Modifier.padding(top = Dimens.space8))
+        AppFieldLabel(text = "未找到重试次数 / 间隔(ms)", modifier = Modifier.padding(top = Dimens.space8))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -290,7 +291,7 @@ private fun CoordinateSection(
     screenHeight: Int,
 ) {
     val rangeHint = if (screenWidth > 0 && screenHeight > 0) "，屏幕 ${screenWidth}×${screenHeight}" else ""
-    AppCaption(
+    AppFieldLabel(
         text = "点击坐标（屏幕像素$rangeHint）",
         modifier = Modifier.padding(top = Dimens.space16),
     )
@@ -391,7 +392,7 @@ fun ScriptManagerDialogContent(
         modifier = Modifier
             .fillMaxWidth()
             .background(scheme.surface)
-            .padding(horizontal = Dimens.space16, vertical = Dimens.space12),
+            .padding(horizontal = Dimens.dialogHPadding, vertical = Dimens.dialogVPadding),
     ) {
         // 保存当前按钮
         AppButton(

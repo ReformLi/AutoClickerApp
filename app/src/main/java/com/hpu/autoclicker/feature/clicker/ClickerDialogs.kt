@@ -21,7 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import com.hpu.autoclicker.core.components.AppButton
 import com.hpu.autoclicker.core.components.AppButtonVariant
-import com.hpu.autoclicker.core.components.AppCaption
+import com.hpu.autoclicker.core.components.AppFieldLabel
 import com.hpu.autoclicker.core.components.AppRadioButtonRow
 import com.hpu.autoclicker.core.components.AppSectionTitle
 import com.hpu.autoclicker.core.components.AppTextField
@@ -58,11 +58,11 @@ fun SettingsDialogContent(
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface, MaterialTheme.shapes.large)
             .verticalScroll(rememberScrollState())
-            .padding(Dimens.dialogHPadding),
+            .padding(horizontal = Dimens.dialogHPadding, vertical = Dimens.dialogVPadding),
     ) {
         AppSectionTitle(text = "悬浮窗设置")
 
-        AppCaption(text = "总循环次数", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "总循环次数", modifier = Modifier.padding(top = Dimens.space24))
         AppTextField(
             value = state.loopCount,
             onValueChange = { state.loopCount = it },
@@ -136,11 +136,11 @@ fun PointSettingsDialogContent(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surface, MaterialTheme.shapes.large)
             .verticalScroll(rememberScrollState())
-            .padding(Dimens.dialogHPadding),
+            .padding(horizontal = Dimens.dialogHPadding, vertical = Dimens.dialogVPadding),
     ) {
         AppSectionTitle(text = "点击点设置")
 
-        AppCaption(text = "点击名称", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "点击名称", modifier = Modifier.padding(top = Dimens.space24))
         AppTextField(
             value = state.name,
             onValueChange = {},
@@ -149,7 +149,7 @@ fun PointSettingsDialogContent(
             readOnly = true,
         )
 
-        AppCaption(text = "点击类型", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "点击类型", modifier = Modifier.padding(top = Dimens.space24))
         Column(modifier = Modifier.padding(top = Dimens.space4)) {
             if (state.isSwipePoint) {
                 // 滑动点：仅显示「滑动」（选中且不可改）
@@ -167,13 +167,13 @@ fun PointSettingsDialogContent(
             }
         }
 
-        AppCaption(text = "点击位置", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "点击位置", modifier = Modifier.padding(top = Dimens.space24))
         Row(modifier = Modifier.padding(top = Dimens.space4)) {
             AppRadioButtonRow("中间", state.clickPosition == "中间", Modifier.weight(1f)) { state.clickPosition = "中间" }
             AppRadioButtonRow("随机", state.clickPosition == "随机", Modifier.weight(1f)) { state.clickPosition = "随机" }
         }
 
-        AppCaption(text = "延迟（毫秒）", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "延迟（毫秒）", modifier = Modifier.padding(top = Dimens.space24))
         AppTextField(
             value = state.delay,
             onValueChange = { state.delay = it },
@@ -183,7 +183,7 @@ fun PointSettingsDialogContent(
         )
 
         // 滑动点显示「滑动持续时间」，其余显示「触摸时长」（与原文案一致）
-        AppCaption(
+        AppFieldLabel(
             text = if (state.isSwipePoint) "滑动持续时间（毫秒）" else "触摸时长（毫秒）",
             modifier = Modifier.padding(top = Dimens.space24),
         )
@@ -195,7 +195,7 @@ fun PointSettingsDialogContent(
             keyboardType = KeyboardType.Number,
         )
 
-        AppCaption(text = "重复次数", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "重复次数", modifier = Modifier.padding(top = Dimens.space24))
         AppTextField(
             value = state.repeatCount,
             onValueChange = { state.repeatCount = it },
@@ -204,7 +204,7 @@ fun PointSettingsDialogContent(
             keyboardType = KeyboardType.Number,
         )
 
-        AppCaption(text = "随机距离（像素）", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "随机距离（像素）", modifier = Modifier.padding(top = Dimens.space24))
         AppTextField(
             value = state.randomDistance,
             onValueChange = { state.randomDistance = it },

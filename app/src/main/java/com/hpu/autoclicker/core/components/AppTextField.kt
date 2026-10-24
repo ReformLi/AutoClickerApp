@@ -69,7 +69,8 @@ fun AppTextField(
             .fillMaxWidth()
             .heightIn(min = Dimens.fieldHeight)
             .background(
-                color = if (focused) scheme.surface else scheme.surfaceContainerHighest,
+                // 未聚焦：浅色底 + 淡描边；聚焦：纯白底 + 品牌色描边（层次更清晰）
+                color = if (focused) scheme.surface else scheme.surfaceContainerLow,
                 shape = shape,
             )
             .border(

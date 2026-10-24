@@ -1,23 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 夜间模式：背景 / 表面 / 文字（与 core/theme/Color.kt DarkColor 同源） -->
-    <color name="background">#FF0B1314</color>
-    <color name="surface">#FF131B1C</color>
-    <color name="input_bg">#FF171F20</color>
-    <color name="stroke">#FF3F484A</color>
+    <!--
+      夜间色板 —— 与 core/theme/Color.kt 的 DarkColor 同源，改色必须两处同步。
+      深色不是简单反色：主色提亮到可辨识、背景走低饱和青墨、文字提亮。
+    -->
 
-    <color name="text_primary">#FFDCE4E5</color>
-    <color name="text_secondary">#FFBFC8CA</color>
-    <color name="text_hint">#FF8A9395</color>
-
+    <!-- 品牌主色：深色下主色提亮为浅青，保证在深底上可读 -->
+    <color name="primary">#FF5AD1E0</color>
+    <color name="primary_dark">#FF7FDCE8</color>
     <color name="primary_light">#FF5AD1E0</color>
-    <color name="primary_container">#FF004F5A</color>
+    <color name="primary_container">#FF0B4A54</color>
+    <color name="on_primary">#FF00363E</color>
+    <color name="on_primary_container">#FFBDE7EC</color>
 
-    <!-- 历史遗留：主页渐变已移除，仅保留键位避免清引用 -->
-    <color name="gradient_start">#FF172554</color>
-    <color name="gradient_center">#FF1E3A8A</color>
-    <color name="gradient_end">#FF312E81</color>
-    <color name="gradient_blob_1">#14FFFFFF</color>
-    <color name="gradient_blob_2">#0DFFFFFF</color>
-    <color name="status_bar_top">#FF060E0F</color>
+    <!-- 背景 / 表面 -->
+    <color name="background">#FF0A1213</color>
+    <color name="surface">#FF0F1819</color>
+    <color name="input_bg">#FF182122</color>
+    <color name="stroke">#FF3C4748</color>
+
+    <!-- 文字 -->
+    <color name="text_primary">#FFDDE6E6</color>
+    <color name="text_secondary">#FFC0CCCD</color>
+    <color name="text_hint">#FF889596</color>
+
+    <!-- 语义色 -->
+    <color name="success">#FF7DD0A0</color>
+    <color name="danger">#FFF2B8B5</color>
+    <color name="disabled">#FF2C3637</color>
 </resources>

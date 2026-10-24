@@ -25,14 +25,18 @@ import com.hpu.autoclicker.core.theme.AppTheme
 import com.hpu.autoclicker.core.theme.Dimens
 
 /**
- * 通用按钮 —— 全项目唯一按钮出口，四种视觉变体 + 四态（默认/按下/禁用/加载）。
+ * 通用按钮 —— 全项目唯一按钮出口，五种视觉变体 + 四态（默认/按下/禁用/加载）。
  *
  * 规格全部来自 token：高度 [Dimens.buttonHeight]、圆角 [MaterialTheme.shapes]（small）、
- * 文字 [MaterialTheme.typography.labelLarge]、内边距 [Dimens.space16]。
+ * 文字 [MaterialTheme.typography.labelLarge]、内边距 [Dimens.buttonHPadding]。
  * 按下/悬浮反馈由 Material3 组件自带 ripple 提供，不手写、不加额外动画。
  *
- * 说明：这是新 API，与旧 `core.theme.AppButton` 并存；页面在阶段三逐个切到这里，
- * 旧组件迁移完成后删除。
+ * 变体语义：
+ * - Filled：主操作（品牌色实心）
+ * - Outlined：次要操作（白底 + 细描边，浮在浅色背景上依然清晰）
+ * - Text：弱化操作（无底色）
+ * - Danger：破坏性操作（关闭 / 删除）
+ * - Success：完成态（权限就绪等）
  */
 enum class AppButtonVariant { Filled, Outlined, Text, Danger, Success }
 
@@ -54,7 +58,7 @@ fun AppButton(
     val baseModifier = modifier
         .then(if (fillMaxWidth) Modifier.fillMaxWidth() else Modifier)
         .height(Dimens.buttonHeight)
-    val contentPadding = PaddingValues(horizontal = Dimens.space16, vertical = 0.dp)
+    val contentPadding = PaddingValues(horizontal = Dimens.buttonHPadding, vertical = 0.dp)
 
     val label: @Composable () -> Unit = {
         Row(
@@ -65,6 +69,7 @@ fun AppButton(
                 CircularProgressIndicator(
                     modifier = Modifier.size(Dimens.iconSm),
                     strokeWidth = 2.dp,
+                    color = scheme.onPrimary,
                 )
                 Spacer(Modifier.width(Dimens.space8))
             }
@@ -121,10 +126,15 @@ fun AppButton(
             enabled = finalEnabled,
             shape = shape,
             contentPadding = contentPadding,
-            border = BorderStroke(Dimens.strokeThin, if (finalEnabled) scheme.outlineVariant else scheme.surfaceContainerHighest),
+            // 白底 + 细描边：浮在浅色背景上仍能看清轮廓
+            border = BorderStroke(
+                Dimens.strokeThin,
+                if (finalEnabled) scheme.outlineVariant else scheme.surfaceContainerHighest,
+            ),
             colors = ButtonDefaults.outlinedButtonColors(
-                containerColor = Color.Transparent,
+                containerColor = scheme.surface,
                 contentColor = scheme.primary,
+                disabledContainerColor = Color.Transparent,
                 disabledContentColor = scheme.outline,
             ),
         ) { label() }
