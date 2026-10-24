@@ -212,8 +212,8 @@ class QuickClickService : Service() {
 
         startForegroundIfNeeded()
 
-        // 新功能启动即进入编辑态，用户无需双击主按钮即可直接添加按钮
-        enterEditMode()
+        // 启动只显示总按钮的折叠态，由用户单击总按钮展开/折叠；
+        // 尚无子按钮时单击会直接进入编辑态，方便先添加按钮或加载脚本
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
