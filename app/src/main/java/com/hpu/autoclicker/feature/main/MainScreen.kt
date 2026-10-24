@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -30,6 +31,7 @@ import com.hpu.autoclicker.core.components.AppButton
 import com.hpu.autoclicker.core.components.AppButtonVariant
 import com.hpu.autoclicker.core.components.AppCard
 import com.hpu.autoclicker.core.components.AppCaption
+import com.hpu.autoclicker.core.components.AppPillButton
 import com.hpu.autoclicker.core.components.AppSegmentedControl
 import com.hpu.autoclicker.core.components.AppSectionTitle
 import com.hpu.autoclicker.core.components.AppTitle
@@ -59,8 +61,9 @@ data class MainUiState(
  * 主页面。
  *
  * 结构（自上而下，统一的「分区 + 卡片」层次）：
- * Hero（图标 + 应用名 + 当前模式说明） → 权限与状态（三行状态 + 状态徽标）
- * → 运行模式（分段开关） → 底部主操作（启动/关闭 + 刷新）。
+ * Hero（图标 + 应用名 + 当前模式说明） → 权限与状态（标题 + 就绪徽标 + 行尾「刷新」胶囊按钮，
+ * 下方卡片三行状态 + 条件显示的「获取权限」按钮）→ 运行模式（分段开关）
+ * → 底部主操作（启动/关闭，平铺占满整行）。
  *
  * 视觉规则：页面底色用 background，卡片用 surface + 细描边，
  * 状态用「圆点 + 徽标」表达，避免大块高饱和色块抢占注意力。
@@ -89,20 +92,21 @@ fun MainScreen(
             HeroCard(state)
 
             // ===== 权限与状态 =====
+            // 就绪徽标左移到标题右侧；行尾原徽标位置改为紧凑的「刷新」按钮。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = Dimens.sectionGap),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AppSectionTitle(
-                    text = "权限与状态",
-                    modifier = Modifier.weight(1f),
-                )
+                AppSectionTitle(text = "权限与状态")
                 AppBadge(
                     text = if (state.allPermissionsGranted) "已就绪" else "待授权",
                     tone = if (state.allPermissionsGranted) AppBadgeTone.Success else AppBadgeTone.Warning,
+                    modifier = Modifier.padding(start = Dimens.space8),
                 )
+                Spacer(Modifier.weight(1f))
+                AppPillButton(text = "刷新", onClick = onRefresh)
             }
             AppCard(
                 modifier = Modifier
@@ -158,24 +162,14 @@ fun MainScreen(
             )
 
             // ===== 主操作 =====
-            Row(
+            // 刷新按钮已移到标题行，底部主操作平铺占满整行
+            ToggleServiceButton(
+                state = state,
+                onClick = onToggleService,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = Dimens.sectionGap),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ToggleServiceButton(
-                    state = state,
-                    onClick = onToggleService,
-                    modifier = Modifier.weight(1f),
-                )
-                AppButton(
-                    text = "刷新状态",
-                    onClick = onRefresh,
-                    modifier = Modifier.padding(start = Dimens.space8),
-                    variant = AppButtonVariant.Text,
-                )
-            }
+            )
         }
     }
 }

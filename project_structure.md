@@ -26,7 +26,7 @@ com.hpu.autoclicker
 │   │   ├── AppTextField.kt            # 输入框：外观走 token；内核保留原生 EditText（overlay 软键盘硬约束）
 │   │   ├── AppSelection.kt            # AppRadioButtonRow / AppCheckboxRow（整行可点，触控≥48dp）
 │   │   ├── AppSegmentedControl.kt     # 分段单选（连点器/代点器模式切换）
-│   │   ├── AppBadge.kt                # 状态徽标：Primary/Success/Warning/Neutral 四色调（权限与运行状态）
+│   │   ├── AppBadge.kt                # 状态徽标：Primary/Success/Warning/Neutral 四色调（权限与运行状态）+ AppPillButton 同尺寸紧凑胶囊按钮
 │   │   └── AppEmptyState.kt           # 空状态占位（脚本管理空列表）
 │   ├── ui/
 │   │   ├── RawTouch.kt                # RawTapDetector + rememberRawTapDetector：悬浮按钮的原始触摸点击判定
@@ -80,10 +80,10 @@ com.hpu.autoclicker
 XML 侧 `res/values/colors.xml`（含 values-night）仍服务于主题/状态栏等 View 层，**色值与 Color.kt 同源**——改色必须两处同步，且浅/深两份键必须对称。主题状态栏与页面背景同色（浅色 `windowLightStatusBar=true`、深色 `false`）；首页渐变相关的 `gradient_*` / `status_bar_top` 遗留色键已删除。
 
 ### `core.components`（通用组件库）
-所有页面的 UI 只允许消费这里的组件与 theme token：按钮（五种变体四态，Outlined 为 `surface` 底 + `outlineVariant` 描边）、卡片（`surface` 底 + 可选细描边，不叠阴影）、语义文本（含 `AppFieldLabel` 表单字段标签）、输入框（**内核保留原生 EditText**，见下文红线）、单选/复选行、分段控件、状态徽标 `AppBadge`、空状态。页面不允许各写一套按钮/卡片/输入框。例外：`feature/quickclick` 的全屏截图框选页、`RegionRatioBar` 与坐标拾取浮层为原生 View（Service 浮层窗口场景，非 Compose 页面）。
+所有页面的 UI 只允许消费这里的组件与 theme token：按钮（五种变体四态，Outlined 为 `surface` 底 + `outlineVariant` 描边）、卡片（`surface` 底 + 可选细描边，不叠阴影）、语义文本（含 `AppFieldLabel` 表单字段标签）、输入框（**内核保留原生 EditText**，见下文红线）、单选/复选行、分段控件、状态徽标 `AppBadge` 与同尺寸紧凑胶囊按钮 `AppPillButton`、空状态。页面不允许各写一套按钮/卡片/输入框。例外：`feature/quickclick` 的全屏截图框选页、`RegionRatioBar` 与坐标拾取浮层为原生 View（Service 浮层窗口场景，非 Compose 页面）。
 
 ### `feature.main`
-主页。`MainUiState` 为唯一状态源，`MainActivity` 刷新权限/服务状态后驱动重组；含模式分段开关（连点器/代点器）。布局为分区式：Hero 卡片（品牌色底 + 图标 + 模式说明）→ 权限与状态（状态圆点 + 徽标三行，行间分隔线）→ 运行模式（分段开关）→ 底部主操作（启动/关闭 + 刷新）。权限齐备时不再显示「获取权限」按钮，由状态卡片说明一切。
+主页。`MainUiState` 为唯一状态源，`MainActivity` 刷新权限/服务状态后驱动重组；含模式分段开关（连点器/代点器）。布局为分区式：Hero 卡片（品牌色底 + 图标 + 模式说明）→ 权限与状态（标题行：标题 + 就绪徽标在左、行尾紧凑「刷新」胶囊按钮；下方卡片三行状态，行间分隔线，条件显示的「获取权限」按钮）→ 运行模式（分段开关）→ 底部主操作（启动/关闭，平铺占满整行）。权限齐备时「获取权限」按钮自动消失，由状态卡片说明一切。
 
 ### `feature.clicker`（连点器，旧功能）
 可拖动、边缘吸附的悬浮主按钮 + 展开操作栏，管理编号点击点与滑动对，按序循环执行点击/滑动/系统按键，支持总循环次数、随机偏移、点位 JSON 保存/加载。
