@@ -38,8 +38,11 @@ import com.hpu.autoclicker.core.components.AppConfirmMessage
 import com.hpu.autoclicker.core.components.AppDialogActions
 import com.hpu.autoclicker.core.components.AppDialogPanel
 import com.hpu.autoclicker.core.components.AppFieldLabel
+import com.hpu.autoclicker.core.components.AppOpacityDialogContent
+import com.hpu.autoclicker.core.components.AppOpacityDialogState
 import com.hpu.autoclicker.core.components.AppTextField
 import com.hpu.autoclicker.core.theme.Dimens
+import com.hpu.autoclicker.core.ui.OpacityDragPreview
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
 import com.hpu.autoclicker.core.ui.ServiceDialogs
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
@@ -104,6 +107,9 @@ class QuickClickService : Service() {
 
     /** ComposeView 在 Service 中所需的生命周期宿主（缺失会抛 ViewTreeLifecycleOwner not found） */
     private val composeHost = ServiceComposeHost()
+
+    /** 拖动透明度滑块时的 20% 预览条（弹框隐藏，只留进行条） */
+    private var opacityPreview: OpacityDragPreview? = null
 
     /** 悬浮窗 UI 状态（展开/编辑态、子按钮列表、按下/拖动反馈），替代原来的 View 手工刷新 */
     private val ui = QuickFloatingUiState()
@@ -235,6 +241,8 @@ class QuickClickService : Service() {
         matchExecutor.shutdownNow()
         captureOverlay?.dismiss()
         captureOverlay = null
+        opacityPreview?.hide()
+        opacityPreview = null
         capturePending = false
         pickOverlay?.dismiss()
         pickOverlay = null
@@ -460,20 +468,23 @@ class QuickClickService : Service() {
 
     /**
      * 透明度弹框：滑块拖动实时改 root.alpha（立即看到效果），
+     * 拖动期间弹框整体隐藏、底部显示 20% 进行条，方便观察真实效果；
      * 「确定」写回 SharedPreferences 供下次启动恢复，「取消」/返回键恢复打开前的值。
      */
     private fun showOpacityDialog() {
         try {
             val previousAlpha = root.alpha
-            val state = OpacityDialogState().apply { alpha = previousAlpha }
+            val state = AppOpacityDialogState().apply { alpha = previousAlpha }
             var confirmed = false
             val host = ServiceComposeHost()
+            val preview = opacityPreview ?: OpacityDragPreview(this).also { opacityPreview = it }
             var dialogRef: AlertDialog? = null
             dialogRef = ServiceDialogs.show(
                 service = this,
                 host = host,
                 widthRatio = 0.85f,
                 onDismiss = {
+                    preview.hide()
                     host.destroy()
                     if (!confirmed) root.alpha = previousAlpha
                 },
@@ -493,9 +504,16 @@ class QuickClickService : Service() {
                         )
                     },
                 ) {
-                    OpacityDialogContent(
+                    AppOpacityDialogContent(
                         state = state,
-                        onAlphaChange = { root.alpha = it },
+                        minAlpha = QuickClickStore.MIN_WINDOW_ALPHA,
+                        onAlphaChange = {
+                            root.alpha = it
+                            preview.update(it)
+                        },
+                        onDraggingChange = { dragging, value ->
+                            if (dragging) preview.show(dialogRef, value) else preview.hide()
+                        },
                     )
                 }
             }

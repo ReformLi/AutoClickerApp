@@ -31,8 +31,8 @@ import com.hpu.autoclicker.core.ui.rememberRawTapDetector
  *
  * 与旧实现差异说明：
  * - 原来通过 ImageView + visibility + findViewById().isEnabled/setImageResource 手工刷新，
- *   现改为「状态驱动」：按钮的可用性、图标（启动/停止、隐藏/显示）全部由
- *   [FloatingServiceUiState] 派生，Compose 自动重组。
+ *   现改为「状态驱动」：按钮的可用性、图标（启动/停止）、运行态下只保留停止按钮，
+ *   全部由 [FloatingServiceUiState] 派生，Compose 自动重组。
  * - 触摸事件仍沿用 MotionEvent 原始坐标（pointerInteropFilter 直接拿到 rawX/rawY），
  *   主按钮的单击展开/折叠、拖动、边缘吸附逻辑与原来完全一致。
  * - 按钮在窗口内的位置通过 onGloballyPositioned 上报给 Service，
@@ -43,23 +43,14 @@ class FloatingServiceUiState {
     /** 操作栏是否展开 */
     var isExpanded by mutableStateOf(false)
 
-    /** 是否正在连点（运行中：启动按钮变停止图标） */
+    /** 是否正在连点（运行中：启动按钮变停止图标，展开栏只剩停止按钮） */
     var isRunning by mutableStateOf(false)
-
-    /** 是否隐藏点击点（隐藏中：隐藏按钮变显示图标） */
-    var isHidden by mutableStateOf(false)
 
     /** 主按钮按下态（等价原 bg_floating_button 的 pressed 态） */
     var mainPressed by mutableStateOf(false)
 
-    /** 添加 / 减少 / 滑动 / 设置：运行中或隐藏时置灰不可点 */
-    val editEnabled: Boolean get() = !isRunning && !isHidden
-
-    /** 隐藏按钮：运行中不可点 */
-    val hideEnabled: Boolean get() = !isRunning
-
-    /** 启动 / 停止按钮：隐藏时不可点 */
-    val startEnabled: Boolean get() = !isHidden
+    /** 添加 / 滑动 / 减少 / 设置 / 透明度 / 退出：运行中不显示 */
+    val editEnabled: Boolean get() = !isRunning
 }
 
 @Composable
@@ -72,12 +63,12 @@ fun FloatingServiceContent(
     onSlide: () -> Unit,
     onReduce: () -> Unit,
     onSettings: () -> Unit,
-    onHide: () -> Unit,
+    onOpacity: () -> Unit,
     onExit: () -> Unit,
     /** 上报主按钮在窗口内的位置（屏幕坐标由 Service 用窗口偏移换算） */
     onMainBounds: (Rect) -> Unit,
-    /** 上报退出按钮在窗口内的位置 */
-    onExitBounds: (Rect) -> Unit,
+    /** 上报停止按钮在窗口内的位置（运行期只有它与主按钮可点） */
+    onStopBounds: (Rect) -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
     Column(
@@ -107,7 +98,8 @@ fun FloatingServiceContent(
             )
         }
 
-        // 展开的操作栏：启动 / 添加 / 滑动 / 减少 / 设置 / 隐藏 / 退出
+        // 展开的操作栏：启动 / 添加 / 滑动 / 减少 / 设置 / 透明度 / 退出。
+        // 运行中只保留「停止」一个按钮，其余全部隐藏（主按钮仍可展开或折叠）。
         if (state.isExpanded) {
             Column(
                 // 注意：这里不能加 fillMaxWidth()。悬浮窗是 WRAP_CONTENT，fillMaxWidth 会解析为
@@ -119,46 +111,48 @@ fun FloatingServiceContent(
                 FloatingIconRow(
                     iconRes = if (state.isRunning) R.drawable.ic_stop else R.drawable.ic_play,
                     desc = if (state.isRunning) "停止" else "启动",
-                    enabled = state.startEnabled,
+                    enabled = true,
                     onClick = onStart,
+                    onBounds = if (state.isRunning) onStopBounds else null,
                 )
-                FloatingIconRow(
-                    iconRes = R.drawable.ic_add,
-                    desc = "添加",
-                    enabled = state.editEnabled,
-                    onClick = onAdd,
-                )
-                FloatingIconRow(
-                    iconRes = R.drawable.ic_slide,
-                    desc = "滑动",
-                    enabled = state.editEnabled,
-                    onClick = onSlide,
-                )
-                FloatingIconRow(
-                    iconRes = R.drawable.ic_remove,
-                    desc = "减少",
-                    enabled = state.editEnabled,
-                    onClick = onReduce,
-                )
-                FloatingIconRow(
-                    iconRes = R.drawable.ic_settings,
-                    desc = "设置",
-                    enabled = state.editEnabled,
-                    onClick = onSettings,
-                )
-                FloatingIconRow(
-                    iconRes = if (state.isHidden) R.drawable.ic_display else R.drawable.ic_hide,
-                    desc = if (state.isHidden) "显示" else "隐藏",
-                    enabled = state.hideEnabled,
-                    onClick = onHide,
-                )
-                FloatingIconRow(
-                    iconRes = R.drawable.ic_exit,
-                    desc = "退出",
-                    enabled = true,   // 退出按钮始终可用
-                    onClick = onExit,
-                    onBounds = onExitBounds,
-                )
+                if (!state.isRunning) {
+                    FloatingIconRow(
+                        iconRes = R.drawable.ic_add,
+                        desc = "添加",
+                        enabled = state.editEnabled,
+                        onClick = onAdd,
+                    )
+                    FloatingIconRow(
+                        iconRes = R.drawable.ic_slide,
+                        desc = "滑动",
+                        enabled = state.editEnabled,
+                        onClick = onSlide,
+                    )
+                    FloatingIconRow(
+                        iconRes = R.drawable.ic_remove,
+                        desc = "减少",
+                        enabled = state.editEnabled,
+                        onClick = onReduce,
+                    )
+                    FloatingIconRow(
+                        iconRes = R.drawable.ic_settings,
+                        desc = "设置",
+                        enabled = state.editEnabled,
+                        onClick = onSettings,
+                    )
+                    FloatingIconRow(
+                        iconRes = R.drawable.ic_opacity,
+                        desc = "透明度",
+                        enabled = state.editEnabled,
+                        onClick = onOpacity,
+                    )
+                    FloatingIconRow(
+                        iconRes = R.drawable.ic_exit,
+                        desc = "退出",
+                        enabled = state.editEnabled,
+                        onClick = onExit,
+                    )
+                }
             }
         }
     }

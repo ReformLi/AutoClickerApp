@@ -10,16 +10,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -32,20 +26,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import com.hpu.autoclicker.core.components.AppButton
-import com.hpu.autoclicker.core.components.AppBodyText
 import com.hpu.autoclicker.core.components.AppButtonVariant
 import com.hpu.autoclicker.core.components.AppCard
 import com.hpu.autoclicker.core.components.AppCheckboxRow
 import com.hpu.autoclicker.core.components.AppCaption
-import com.hpu.autoclicker.core.components.AppEmptyState
 import com.hpu.autoclicker.core.components.AppFieldLabel
+import com.hpu.autoclicker.core.components.AppScriptList
 import com.hpu.autoclicker.core.components.AppSegmentedControl
 import com.hpu.autoclicker.core.components.AppTextField
 import com.hpu.autoclicker.core.theme.Dimens
-import kotlin.math.roundToInt
 
 /**
  * 代点器（快捷点击）的两个服务内弹框（原 dialog_quick_click_config.xml / dialog_script_manager.xml）。
@@ -421,42 +411,8 @@ class InputDialogState {
 }
 
 // ==================== 悬浮窗透明度 ====================
-
-/** 透明度弹框状态：滑块值实时回写悬浮窗 alpha */
-@Stable
-class OpacityDialogState {
-    var alpha by mutableStateOf(1f)
-}
-
-/** 透明度弹框正文（外框由 AppDialogPanel 提供） */
-@Composable
-fun OpacityDialogContent(
-    state: OpacityDialogState,
-    onAlphaChange: (Float) -> Unit,
-) {
-    val percent = (state.alpha * 100).roundToInt()
-    Column(modifier = Modifier.fillMaxWidth()) {
-        AppCaption(text = "拖动滑块即可实时预览悬浮窗透明度，点「确定」保存")
-        Slider(
-            value = state.alpha,
-            onValueChange = {
-                state.alpha = it
-                onAlphaChange(it)
-            },
-            valueRange = QuickClickStore.MIN_WINDOW_ALPHA..1f,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = Dimens.space8),
-        )
-        Text(
-            text = "$percent%",
-            modifier = Modifier.fillMaxWidth(),
-            textAlign = TextAlign.Center,
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary,
-        )
-    }
-}
+// 正文与状态已抽到 core.components（[com.hpu.autoclicker.core.components.AppOpacityDialogContent]），
+// 与连点器共用同一页面；透明度各自持久化，互不干扰。
 
 // ==================== 脚本管理（dialog_script_manager.xml） ====================
 
@@ -475,7 +431,6 @@ fun ScriptManagerDialogContent(
     onRenameScript: (QuickScript) -> Unit,
     onDeleteScript: (QuickScript) -> Unit,
 ) {
-    val scheme = MaterialTheme.colorScheme
     Column(modifier = Modifier.fillMaxWidth()) {
         // 保存当前按钮
         AppButton(
@@ -484,65 +439,15 @@ fun ScriptManagerDialogContent(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        // 空态提示（无脚本时显示）
-        if (state.scripts.isEmpty()) {
-            AppEmptyState(
-                title = "暂无已保存脚本",
-                description = "先在悬浮窗上添加按钮，再回到这里保存",
-                modifier = Modifier.padding(top = Dimens.space8),
-            )
-        }
-
-        // 脚本列表（超高时列表自身滚动，行与行之间用分隔线断开）
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = Dimens.space24 * 10)
-                .padding(top = Dimens.space8)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            state.scripts.forEachIndexed { index, script ->
-                if (index > 0) {
-                    HorizontalDivider(
-                        thickness = Dimens.divider,
-                        color = scheme.outlineVariant,
-                        modifier = Modifier.padding(vertical = Dimens.space4),
-                    )
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(Dimens.touchMin),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // 点击名称 = 加载该脚本
-                    AppBodyText(
-                        text = script.name,
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { onLoadScript(script) }
-                            .padding(start = Dimens.space4),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = "改名",
-                        modifier = Modifier
-                            .clickable { onRenameScript(script) }
-                            .padding(horizontal = Dimens.space12, vertical = Dimens.space4),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = scheme.primary,
-                    )
-                    Text(
-                        text = "删除",
-                        modifier = Modifier
-                            .clickable { onDeleteScript(script) }
-                            .padding(start = Dimens.space12, end = Dimens.space4, top = Dimens.space4, bottom = Dimens.space4),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = scheme.error,
-                    )
-                }
-            }
-        }
+        // 脚本列表（与连点器「悬浮窗设置」共用同一套列表行样式）
+        AppScriptList(
+            scripts = state.scripts,
+            nameOf = { it.name },
+            onLoad = onLoadScript,
+            onRename = onRenameScript,
+            onDelete = onDeleteScript,
+            emptyTitle = "暂无已保存脚本",
+            emptyDescription = "先在悬浮窗上添加按钮，再回到这里保存",
+        )
     }
 }

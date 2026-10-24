@@ -12,9 +12,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import com.hpu.autoclicker.core.components.AppButton
-import com.hpu.autoclicker.core.components.AppButtonVariant
 import com.hpu.autoclicker.core.components.AppFieldLabel
 import com.hpu.autoclicker.core.components.AppRadioButtonRow
+import com.hpu.autoclicker.core.components.AppScriptList
 import com.hpu.autoclicker.core.components.AppTextField
 import com.hpu.autoclicker.core.theme.Dimens
 
@@ -30,18 +30,21 @@ import com.hpu.autoclicker.core.theme.Dimens
 
 // ==================== 悬浮窗设置（dialog_settings.xml） ====================
 
-/** 悬浮窗设置状态（总循环次数字符串） */
+/** 悬浮窗设置状态（循环次数 + 已保存脚本列表） */
 @Stable
 class SettingsDialogState {
     var loopCount by mutableStateOf("")
+    var scripts by mutableStateOf<List<ClickerScript>>(emptyList())
 }
 
 /** 悬浮窗设置弹框正文（标题与底部按钮由 AppDialogPanel 统一渲染） */
 @Composable
 fun SettingsDialogContent(
     state: SettingsDialogState,
-    onSavePoints: () -> Unit,
-    onLoadPoints: () -> Unit,
+    onSaveCurrent: () -> Unit,
+    onLoadScript: (ClickerScript) -> Unit,
+    onRenameScript: (ClickerScript) -> Unit,
+    onDeleteScript: (ClickerScript) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         AppFieldLabel(text = "总循环次数")
@@ -53,23 +56,34 @@ fun SettingsDialogContent(
             keyboardType = KeyboardType.Number,
         )
 
+        AppFieldLabel(text = "脚本", modifier = Modifier.padding(top = Dimens.space16))
         AppButton(
-            text = "保存当前点击位置",
-            onClick = onSavePoints,
+            text = "保存当前点位",
+            onClick = onSaveCurrent,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = Dimens.space24),
-            variant = AppButtonVariant.Outlined,
+                .padding(top = Dimens.fieldGap),
         )
-        AppButton(
-            text = "打开点击文件",
-            onClick = onLoadPoints,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = Dimens.space12),
-            variant = AppButtonVariant.Outlined,
+
+        // 脚本列表：与代点器「脚本管理」共用同一套行样式（点击名称加载）
+        AppScriptList(
+            scripts = state.scripts,
+            nameOf = { it.name },
+            onLoad = onLoadScript,
+            onRename = onRenameScript,
+            onDelete = onDeleteScript,
+            emptyTitle = "暂无已保存脚本",
+            emptyDescription = "先在悬浮窗上添加点位，再回到这里保存",
         )
     }
+}
+
+// ==================== 单行输入（保存脚本 / 重命名脚本） ====================
+
+/** 单行输入弹框状态 */
+@Stable
+class ClickerInputDialogState {
+    var value by mutableStateOf("")
 }
 
 // ==================== 点击点设置（activity_point_settings.xml） ====================

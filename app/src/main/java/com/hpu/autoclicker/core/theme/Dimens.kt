@@ -63,6 +63,13 @@ object Dimens {
     val strokeThin: Dp = 1.dp
     val strokeFocused: Dp = 1.5.dp
 
+    /** 滑块 */
+    val sliderTrackHeight: Dp = 8.dp      // 胶囊轨道高度
+    val sliderThumbSize: Dp = 24.dp      // 圆形滑钮直径
+    val sliderThumbStroke: Dp = 2.5.dp   // 滑钮描边宽度
+    val sliderThumbShadowIdle: Dp = 3.dp // 未拖动时投影
+    val sliderThumbShadowActive: Dp = 8.dp // 拖动时投影
+
     /** 动效时长（ms），统一 150–300ms */
     object Motion {
         const val durationShort = 150

@@ -28,19 +28,26 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.content.ContextCompat
 import androidx.core.view.doOnLayout
 import com.hpu.autoclicker.core.accessibility.AutoClickerAccessibilityService
+import com.hpu.autoclicker.core.components.AppButtonVariant
+import com.hpu.autoclicker.core.components.AppConfirmMessage
 import com.hpu.autoclicker.core.components.AppDialogActions
 import com.hpu.autoclicker.core.components.AppDialogPanel
+import com.hpu.autoclicker.core.components.AppFieldLabel
+import com.hpu.autoclicker.core.components.AppOpacityDialogContent
+import com.hpu.autoclicker.core.components.AppOpacityDialogState
+import com.hpu.autoclicker.core.components.AppTextField
+import com.hpu.autoclicker.core.ui.OpacityDragPreview
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
 import com.hpu.autoclicker.core.ui.ServiceDialogs
 import com.hpu.autoclicker.core.ui.stripPlatformPanel
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
+import com.hpu.autoclicker.core.theme.Dimens
 import kotlin.jvm.java
 
 /**
@@ -62,13 +69,13 @@ class FloatingWindowService : Service() {
     /** ComposeView 在 Service 中所需的生命周期宿主（缺失会抛 ViewTreeLifecycleOwner not found） */
     private val composeHost = ServiceComposeHost()
 
-    /** 悬浮窗 UI 状态：展开/运行/隐藏，替代原来 findViewById + isEnabled/setImageResource 的手工刷新 */
+    /** 悬浮窗 UI 状态：展开/运行，替代原来 findViewById + isEnabled/setImageResource 的手工刷新 */
     private val ui = FloatingServiceUiState()
 
-    // 主按钮 / 退出按钮在「窗口内」的位置（屏幕坐标 = 窗口内坐标 + layoutParams 偏移）
+    // 主按钮 / 停止按钮在「窗口内」的位置（屏幕坐标 = 窗口内坐标 + layoutParams 偏移）
     // 用于运行期判断触摸是否落在允许的按钮上（等价原 findViewById + getLocationOnScreen）
     private var mainBtnWindowRect = Rect()
-    private var exitBtnWindowRect = Rect()
+    private var stopBtnWindowRect = Rect()
 
     // 悬浮窗的布局参数（位置、大小、类型等）
     private lateinit var layoutParams: WindowManager.LayoutParams
@@ -116,10 +123,14 @@ class FloatingWindowService : Service() {
     private var settingsDialog: AlertDialog? = null
     private var maxLoopCount = 0   // 0或负数表示无限循环，>0 为固定次数
 
-    // 隐藏状态（读写统一落到 ui 状态，UI 自动刷新隐藏/显示图标与按钮可用性）
-    private var isHidden: Boolean
-        get() = ui.isHidden
-        set(value) { ui.isHidden = value }
+    /** 当前点位来自哪个已保存脚本（用于「保存当前点位」预填名称） */
+    private var currentScriptName: String? = null
+
+    /** 点击 / 滑动点位的不透明度（用户设置值；运行期会临时压到 ≤0.3） */
+    private var pointAlpha = 1f
+
+    /** 拖动透明度滑块时的 20% 预览条（弹框隐藏，只留进行条） */
+    private var opacityPreview: OpacityDragPreview? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -143,11 +154,11 @@ class FloatingWindowService : Service() {
                     onSlide = { addSwipePair() },
                     onReduce = { removeLastClickPoint() },
                     onSettings = { showGlobalSettingsDialog() },
-                    onHide = { toggleHide() },
+                    onOpacity = { showOpacityDialog() },
                     onExit = { stopSelf() },
                     // 上报按钮在窗口内的位置，供运行期「触摸是否落在允许按钮上」的判定使用
                     onMainBounds = { rect -> mainBtnWindowRect = rect },
-                    onExitBounds = { rect -> exitBtnWindowRect = rect },
+                    onStopBounds = { rect -> stopBtnWindowRect = rect },
                 )
             }
         }
@@ -181,6 +192,10 @@ class FloatingWindowService : Service() {
         layoutParams.gravity = Gravity.START or Gravity.TOP  // 以屏幕左上角为原点
         layoutParams.x = 0
         layoutParams.y = (getScreenHeight() - h) / 2
+
+        // 恢复用户上次保存的悬浮窗透明度（与代点器各存各的，互不干扰）
+        rootView.alpha = ClickerScriptStore.getWindowAlpha(this)
+        pointAlpha = ClickerScriptStore.getPointAlpha(this)
 
         // 将悬浮窗添加到窗口管理器
         try {
@@ -270,6 +285,8 @@ class FloatingWindowService : Service() {
         pipeMap.clear()
         pointSettingsDialog?.dismiss()
         pointSettingsDialog = null
+        opacityPreview?.hide()
+        opacityPreview = null
 
         composeHost.destroy()   // 释放 ComposeView 的生命周期宿主
         unregisterReceiver(configReceiver)
@@ -352,8 +369,8 @@ class FloatingWindowService : Service() {
         // 切换展开/折叠（原为切换 expandedControls 的 visibility，现由 Compose 状态驱动）
         ui.isExpanded = !ui.isExpanded
         if (!ui.isExpanded) {
-            // 折叠后退出按钮不再显示，其位置信息作废，避免运行期触摸判定误命中
-            exitBtnWindowRect = Rect()
+            // 折叠后按钮不再显示，其位置信息作废，避免运行期触摸判定误命中
+            stopBtnWindowRect = Rect()
         }
 
         // 视图大小改变后，重新测量并更新布局。
@@ -504,6 +521,8 @@ class FloatingWindowService : Service() {
 
         clickPoints.add(point)
 
+        // 应用用户设置的点位透明度（运行期会再统一压到 ≤0.3）
+        pointView.alpha = pointAlpha
         windowManager.addView(pointView, pointParams)
         setupPointDrag(pointView, pointParams, point)
         return point
@@ -655,6 +674,7 @@ class FloatingWindowService : Service() {
         val lineParams = createPipeLineLayoutParams()
         // 存入 map
         pipeMap[pairId] = Pair(lineView, lineParams)
+        lineView.alpha = pointAlpha
         // 2. 先添加管道到窗口（使其位于下层）
         windowManager.addView(lineView, lineParams)
 
@@ -678,7 +698,12 @@ class FloatingWindowService : Service() {
             loopCount = if (maxLoopCount <= 0) "" else maxLoopCount.toString()
         }
         val host = ServiceComposeHost()
-        settingsDialog = ServiceDialogs.show(
+        var dialogRef: AlertDialog? = null
+        // 重新读取脚本列表 → 触发 Compose 刷新
+        val refresh: () -> Unit = {
+            form.scripts = ClickerScriptStore.loadScripts(this)
+        }
+        dialogRef = ServiceDialogs.show(
             service = this,
             host = host,
             widthRatio = 0.9f,
@@ -698,20 +723,24 @@ class FloatingWindowService : Service() {
                                 "循环次数已更新",
                                 Toast.LENGTH_SHORT,
                             ).show()
-                            settingsDialog?.dismiss()
+                            dialogRef?.dismiss()
                         },
                         cancelText = "取消",
-                        onCancel = { settingsDialog?.dismiss() },
+                        onCancel = { dialogRef?.dismiss() },
                     )
                 },
             ) {
                 SettingsDialogContent(
                     state = form,
-                    onSavePoints = { savePointsToFile(); settingsDialog?.dismiss() },
-                    onLoadPoints = { loadPointsFromFile(); settingsDialog?.dismiss() },
+                    onSaveCurrent = { saveCurrentScript(refresh) },
+                    onLoadScript = { script -> handleLoadScript(script, dialogRef) },
+                    onRenameScript = { script -> handleRenameScript(script, refresh) },
+                    onDeleteScript = { script -> handleDeleteScript(script, refresh) },
                 )
             }
         }
+        settingsDialog = dialogRef
+        refresh()
     }
 
     private fun createCircleButton(label: String, pairId: Int, isStart: Boolean): TextView {
@@ -813,7 +842,7 @@ class FloatingWindowService : Service() {
             service.performClick(x, y, clickDuration)
 
             runHandler.postDelayed({
-                point.view.visibility = if (isHidden) View.GONE else View.VISIBLE
+                point.view.visibility = View.VISIBLE
                 onFinished()
             }, clickDuration + 80)
         }, 80)
@@ -831,10 +860,9 @@ class FloatingWindowService : Service() {
         }
 
         isRunning = true
-        // 悬浮窗半透明
-        rootView.alpha = 0.5f
-        // 将其他按钮置灰（添加、减少、设置、滑动、隐藏等）与启动图标切换为“停止”，
-        // 原为 setButtonsEnabled(false) + setImageResource(ic_stop)，现由 ui.isRunning 派生，Compose 自动刷新
+        // 透明度沿用用户设置，不在这里强制半透明
+        stopBtnWindowRect = Rect()
+        // 运行中展开栏只保留「停止」按钮，其余按钮全部隐藏（由 ui.isRunning 派生，Compose 自动刷新）
 
         // 运行期间点击任何橙色圆形按钮（普通点或滑动点），连点不会停止，触摸完全穿透到背后应用
         rootView.setOnTouchListener { _, event ->
@@ -860,9 +888,11 @@ class FloatingWindowService : Service() {
             false
         }
 
-        // 所有点击点圆形按钮半透明可见，让手势穿透到应用层
+        // 所有点击点圆形按钮半透明可见，让手势穿透到应用层；
+        // 用户已把点位透明度调得更低时保留其设置，不再强行提亮
+        val runningPointAlpha = minOf(pointAlpha, 0.3f)
         for (point in clickPoints) {
-            point.view.alpha = 0.3f                     // 半透明可见
+            point.view.alpha = runningPointAlpha
             point.params?.let { params ->
                 params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                 windowManager.updateViewLayout(point.view, params)
@@ -872,7 +902,7 @@ class FloatingWindowService : Service() {
         // 管道也必须穿透，否则滑动路径容易被悬浮管道窗口拦截
         for ((_, pipePair) in pipeMap) {
             val (lineView, params) = pipePair
-            lineView.alpha = 0.3f
+            lineView.alpha = runningPointAlpha
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             windowManager.updateViewLayout(lineView, params)
         }
@@ -956,9 +986,9 @@ class FloatingWindowService : Service() {
 
                                 // 手势执行后恢复视图
                                 runHandler.postDelayed({
-                                    startView.visibility = if (isHidden) View.GONE else View.VISIBLE
-                                    endView.visibility = if (isHidden) View.GONE else View.VISIBLE
-                                    pipeMap[point.pairId]?.first?.visibility = if (isHidden) View.GONE else View.VISIBLE
+                                    startView.visibility = View.VISIBLE
+                                    endView.visibility = View.VISIBLE
+                                    pipeMap[point.pairId]?.first?.visibility = View.VISIBLE
                                 }, maxOf(point.touchDuration, 200))   // 等待手势完成
 
                                 remaining--
@@ -993,7 +1023,7 @@ class FloatingWindowService : Service() {
                                 service.performClick(targetX, targetY, 50)
                                 remaining--
                                 runHandler.postDelayed({
-                                    point.view.visibility = if (isHidden) View.GONE else View.VISIBLE
+                                    point.view.visibility = View.VISIBLE
                                     doDouble()
                                 }, point.touchDuration + 50)
                             }, 100)  // 双击间隔100ms
@@ -1038,8 +1068,7 @@ class FloatingWindowService : Service() {
         // 恢复主悬浮窗
 //        rootView.visibility = View.VISIBLE
 //        windowManager.updateViewLayout(rootView, layoutParams)
-        // 恢复透明度
-        rootView.alpha = 1.0f
+        // 透明度保持用户设置，不在这里改回 1.0
 
         // 恢复其他按钮（原 setOtherButtonsEnabled(true)，现由 ui.isRunning=false 派生）
         // 启动图标恢复为“播放”同样由 ui.isRunning 派生自动完成
@@ -1049,8 +1078,8 @@ class FloatingWindowService : Service() {
 
         // 恢复所有点击点视图
         for (point in clickPoints) {
-            point.view.alpha = 1.0f                     // 恢复完全不透明
-            point.view.visibility = if (isHidden) View.GONE else View.VISIBLE
+            point.view.alpha = pointAlpha               // 恢复用户设置的点位透明度
+            point.view.visibility = View.VISIBLE
             point.params?.let { params ->
                 params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
                 windowManager.updateViewLayout(point.view, params)
@@ -1060,15 +1089,15 @@ class FloatingWindowService : Service() {
         // 恢复管道显示效果，但保持不可触摸，符合“仅作视觉提示”的需求
         for ((_, pipePair) in pipeMap) {
             val (lineView, params) = pipePair
-            lineView.alpha = 1.0f
-            lineView.visibility = if (isHidden) View.GONE else View.VISIBLE
+            lineView.alpha = pointAlpha
+            lineView.visibility = View.VISIBLE
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             windowManager.updateViewLayout(lineView, params)
         }
     }
 
     /**
-     * 判断触摸点是否落在允许的按钮上（主按钮、退出按钮）。
+     * 判断触摸点是否落在允许的按钮上（主按钮、停止按钮）。
      * 原实现用 findViewById + getLocationOnScreen；现按钮位置由 Compose 的
      * onGloballyPositioned 上报「窗口内坐标」，加上窗口偏移即屏幕绝对坐标。
      */
@@ -1076,9 +1105,9 @@ class FloatingWindowService : Service() {
         // 主按钮
         val main = Rect(mainBtnWindowRect).apply { offset(layoutParams.x, layoutParams.y) }
         if (main.contains(rawX, rawY)) return true
-        // 退出按钮
-        val exit = Rect(exitBtnWindowRect).apply { offset(layoutParams.x, layoutParams.y) }
-        return exit.contains(rawX, rawY)
+        // 停止按钮（运行中展开栏只剩它）
+        val stop = Rect(stopBtnWindowRect).apply { offset(layoutParams.x, layoutParams.y) }
+        return stop.contains(rawX, rawY)
     }
 
     /**
@@ -1210,140 +1239,167 @@ class FloatingWindowService : Service() {
         pointSettingsDialog?.dismiss()
     }
 
-    private fun savePointsToFile() {
-        try {
-            // 按 id 升序排序，若 id 相同则起点在前
-            val sortedPoints = clickPoints.sortedWith(
-                compareBy<ClickPoint> { it.id }
-                    .thenBy { if (it.isStart) 0 else 1 }  // 滑动对中起点优先
+    // ==================== 脚本管理（保存 / 加载 / 改名 / 删除） ====================
+
+    /** 「保存当前点位」：把内存中的点位存成命名脚本（同名则先确认覆盖） */
+    private fun saveCurrentScript(onChanged: () -> Unit) {
+        if (clickPoints.isEmpty()) {
+            Toast.makeText(this, "当前没有点位，请先添加", Toast.LENGTH_SHORT).show()
+            return
+        }
+        // 从脚本加载来的点位，预填该脚本名（可改可直接保存）
+        showInputDialog("保存脚本", currentScriptName ?: "", "输入脚本名称", 12) { scriptName ->
+            if (ClickerScriptStore.loadScripts(this).any { it.name == scriptName }) {
+                showConfirmDialog(
+                    title = "覆盖脚本",
+                    message = "脚本「$scriptName」已存在，是否覆盖？",
+                    confirmText = "覆盖",
+                ) {
+                    ClickerScriptStore.saveScript(this, scriptName, collectPoints())
+                    currentScriptName = scriptName
+                    onChanged()
+                    Toast.makeText(this, "已覆盖脚本「$scriptName」", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                ClickerScriptStore.saveScript(this, scriptName, collectPoints())
+                currentScriptName = scriptName
+                onChanged()
+                Toast.makeText(this, "已保存脚本「$scriptName」", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** 点击脚本名称：加载/切换；悬浮框上已有点位时先确认覆盖 */
+    private fun handleLoadScript(script: ClickerScript, dialog: AlertDialog?) {
+        when {
+            script.points.isEmpty() ->
+                Toast.makeText(this, "脚本「${script.name}」没有点位", Toast.LENGTH_SHORT).show()
+            // 悬浮框上已有点位：先确认覆盖，避免未保存的节点被直接替换掉
+            clickPoints.isNotEmpty() -> showConfirmDialog(
+                title = "加载脚本",
+                message = "当前点位未保存，加载脚本「${script.name}」将覆盖它们，是否覆盖？",
+                confirmText = "覆盖",
+            ) {
+                loadScript(script, dialog)
+            }
+            else -> loadScript(script, dialog)
+        }
+    }
+
+    /** 「改名」：重命名脚本（新名已存在则提示） */
+    private fun handleRenameScript(script: ClickerScript, onChanged: () -> Unit) {
+        showInputDialog("重命名脚本", script.name, "输入新名称", 12) { newName ->
+            if (ClickerScriptStore.renameScript(this, script.name, newName)) {
+                if (currentScriptName == script.name) currentScriptName = newName
+                onChanged()
+                Toast.makeText(this, "已重命名为「$newName」", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "脚本名「$newName」已存在", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** 「删除」：确认后删除脚本 */
+    private fun handleDeleteScript(script: ClickerScript, onChanged: () -> Unit) {
+        showConfirmDialog(
+            title = "删除脚本",
+            message = "确定删除脚本「${script.name}」？",
+            confirmText = "删除",
+            danger = true,
+        ) {
+            ClickerScriptStore.deleteScript(this, script.name)
+            if (currentScriptName == script.name) currentScriptName = null
+            onChanged()
+            Toast.makeText(this, "已删除脚本「${script.name}」", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** 载入脚本：替换悬浮框上的点位，并关闭设置弹框 */
+    private fun loadScript(script: ClickerScript, dialog: AlertDialog?) {
+        stopRunning()
+        removeAllPoints()
+        restorePoints(script.points)
+        currentScriptName = script.name
+        dialog?.dismiss()
+        Toast.makeText(this, "已加载脚本「${script.name}」", Toast.LENGTH_SHORT).show()
+    }
+
+    /** 当前点位快照（按 id 升序，滑动对中起点在前，与旧文件顺序一致） */
+    private fun collectPoints(): List<ClickerPointData> =
+        clickPoints.sortedWith(
+            compareBy<ClickPoint> { it.id }
+                .thenBy { if (it.isStart) 0 else 1 }  // 滑动对中起点优先
+        ).map { p ->
+            ClickerPointData(
+                id = p.id,
+                x = p.x,
+                y = p.y,
+                type = p.type,
+                name = p.name,
+                delay = p.delay,
+                touchDuration = p.touchDuration,
+                repeatCount = p.repeatCount,
+                randomDistance = p.randomDistance,
+                clickPosition = p.clickPosition,
+                pairId = p.pairId,
+                isStart = p.isStart,
+                endX = p.endX,
+                endY = p.endY,
             )
-            val jsonArray = JSONArray()
-            for (p in sortedPoints) {
-                val obj = JSONObject().apply {
-                    put("id", p.id)
-                    put("x", p.x.toDouble())
-                    put("y", p.y.toDouble())
-                    put("type", p.type)
-                    put("name", p.name)
-                    put("delay", p.delay)
-                    put("touchDuration", p.touchDuration)
-                    put("repeatCount", p.repeatCount)
-                    put("randomDistance", p.randomDistance)
-                    put("clickPosition", p.clickPosition)
-                    put("pairId", p.pairId)
-                    put("isStart", p.isStart)
-                    put("endX", p.endX.toDouble())
-                    put("endY", p.endY.toDouble())
+        }
+
+    /** 移除所有点位与管道视图，重置编号计数 */
+    private fun removeAllPoints() {
+        for (p in clickPoints) {
+            windowManager.removeView(p.view)
+        }
+        clickPoints.clear()
+        for ((_, pipePair) in pipeMap) {
+            windowManager.removeView(pipePair.first)
+        }
+        pipeMap.clear()
+        pointCount = 0
+    }
+
+    /** 按保存顺序重建点位（还原流程与旧「打开点击文件」保持一致） */
+    private fun restorePoints(points: List<ClickerPointData>) {
+        for (data in points) {
+            if (data.pairId != -1) {
+                val pairId = if (data.isStart) pointCount + 1 else pointCount
+                if (data.isStart) {
+                    // 先创建管道并加入窗口（位于节点下层）
+                    val lineView = PipeLineView(this)
+                    val lineParams = createPipeLineLayoutParams()
+                    pipeMap[pairId] = Pair(lineView, lineParams)
+                    lineView.alpha = pointAlpha
+                    windowManager.addView(lineView, lineParams)
                 }
-                jsonArray.put(obj)
+                val point = addClickPoint(pairId, data.isStart)
+                applyLoadedPoint(point, data)
+                movePoint(point, data.x, data.y, !data.isStart)
+            } else {
+                // 普通点击点
+                val point = addClickPoint(-1, true)
+                applyLoadedPoint(point, data)
+                movePoint(point, data.x, data.y, false)
             }
-            val file = File(filesDir, "click_points.json")
-            file.writeText(jsonArray.toString())
-            Toast.makeText(this, "当前点击位置已保存", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Toast.makeText(this, "保存失败", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun loadPointsFromFile() {
-        try {
-            val file = File(filesDir, "click_points.json")
-            if (!file.exists()) {
-                Toast.makeText(this, "没有已保存的位置", Toast.LENGTH_SHORT).show()
-                return
-            }
-            val text = file.readText()
-            val jsonArray = JSONArray(text)
-
-            // 1. 停止连点（如果正在运行）
-            stopRunning()
-
-            // 2. 移除所有点击点视图
-            for (p in clickPoints) {
-                windowManager.removeView(p.view)
-            }
-
-            // 3. 清除点击点列表
-            clickPoints.clear()
-
-            // 4. 移除所有管道视图
-            for ((_, pipePair) in pipeMap) {
-                windowManager.removeView(pipePair.first)
-            }
-
-            // 5. 清除管道映射
-            pipeMap.clear()
-            pointCount = 0
-            // 2. 临时禁用互斥逻辑，直接加载
-            // 3. 重新创建点（按类型区分）
-            for (i in 0 until jsonArray.length()) {
-                val obj = jsonArray.getJSONObject(i)
-                val id = obj.getInt("id")
-                val xAxis = obj.getDouble("x").toFloat()
-                val yAxis = obj.getDouble("y").toFloat()
-                val type = obj.getString("type")
-                val name = obj.optString("name", "点 $id")
-                val delay = obj.optLong("delay", 0)
-                val touchDuration = obj.optLong("touchDuration", 300)
-                val repeatCount = obj.optInt("repeatCount", 1)
-                val randomDistance = obj.optInt("randomDistance", 0)
-                val clickPosition = obj.optString("clickPosition", "中间")
-                val pairId = obj.optInt("pairId", -1)
-                val isStart = obj.optBoolean("isStart", false)
-                val endX = obj.optDouble("endX", 0.0).toFloat()
-                val endY = obj.optDouble("endY", 0.0).toFloat()
-                Log.d("pointCount", pointCount.toString())
-                if (pairId != -1) {
-                    val pairId1 = if (isStart ) pointCount + 1 else pointCount
-                    // 滑动点：需要成对重建，但加载时按顺序可能先读到起点或终点，采用特殊处理
-                    // 添加起点和终点节点（后添加的节点会覆盖在管道上方）
-                    if (isStart){
-                        // 创建管道视图和参数
-                        val lineView = PipeLineView(this)
-                        val lineParams = createPipeLineLayoutParams()
-                        // 存入 map
-                        pipeMap[pairId1] = Pair(lineView, lineParams)
-                        // 2. 先添加管道到窗口（使其位于下层）
-                        windowManager.addView(lineView, lineParams)
-                        // 滑动开始节点
-                        val point = addClickPoint(pairId1, true)
-                        addLoadedClickPoint(point, xAxis, yAxis, type, endX, endY, delay, touchDuration, repeatCount,randomDistance,isStart)
-                        movePoint(point,xAxis,yAxis,false)
-                    }else{
-                        // 滑动结束节点
-                        val point = addClickPoint(pairId1, false)
-                        addLoadedClickPoint(point, xAxis, yAxis, type, endX, endY, delay, touchDuration, repeatCount,randomDistance,isStart)
-                        movePoint(point,xAxis,yAxis,true)
-                    }
-
-                } else {
-                    // 普通点击点
-                    val point = addClickPoint(-1,true)//isStart:随意
-                    addLoadedClickPoint(point, xAxis, yAxis, type, endX, endY, delay, touchDuration, repeatCount,randomDistance,isStart)
-                    movePoint(point,xAxis,yAxis,false)
-                }
-            }
-            Toast.makeText(this, "文件已加载完成", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Toast.makeText(this, "加载失败，文件可能损坏", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun addLoadedClickPoint(point: ClickPoint, startX: Float, startY: Float,type: String,
-                                    endX: Float, endY: Float,
-                                    delay: Long, touchDuration: Long, repeatCount: Int,
-                                    randomDistance: Int,isStart: Boolean): ClickPoint{
-        point.x = startX
-        point.y = startY
-        point.type = type
-        point.isStart = isStart
-        point.delay = delay
-        point.touchDuration = touchDuration
-        point.repeatCount = repeatCount
-        point.randomDistance = randomDistance
-        return point
+    /** 把脚本里的点位参数回填到新建的 ClickPoint */
+    private fun applyLoadedPoint(point: ClickPoint, data: ClickerPointData) {
+        point.x = data.x
+        point.y = data.y
+        point.type = data.type
+        point.name = data.name
+        point.isStart = data.isStart
+        point.delay = data.delay
+        point.touchDuration = data.touchDuration
+        point.repeatCount = data.repeatCount
+        point.randomDistance = data.randomDistance
+        point.clickPosition = data.clickPosition
+        point.endX = data.endX
+        point.endY = data.endY
     }
 
     /**
@@ -1365,26 +1421,174 @@ class FloatingWindowService : Service() {
             updatePipeLine(point.pairId)
     }
 
-    private fun toggleHide() {
-        if (isRunning) {
-            Toast.makeText(this, "请先停止连点", Toast.LENGTH_SHORT).show()
-            return
+    // ==================== 透明度 / 通用弹框 ====================
+
+    /**
+     * 透明度弹框（与代点器同一页面，但透明度各存各的）：
+     * 两个滑块分别控制「悬浮窗」与「点击 / 滑动点位」的不透明度，拖动即实时生效；
+     * 拖动期间弹框整体隐藏、底部显示 20% 进行条，方便观察真实效果；
+     * 「确定」写回本功能的 SharedPreferences，「取消」/返回键恢复打开前的值。
+     */
+    private fun showOpacityDialog() {
+        try {
+            val previousAlpha = rootView.alpha
+            val previousPointAlpha = pointAlpha
+            val state = AppOpacityDialogState().apply {
+                alpha = previousAlpha
+                pointAlpha = previousPointAlpha
+            }
+            var confirmed = false
+            val host = ServiceComposeHost()
+            val preview = opacityPreview ?: OpacityDragPreview(this).also { opacityPreview = it }
+            var dialogRef: AlertDialog? = null
+            dialogRef = ServiceDialogs.show(
+                service = this,
+                host = host,
+                widthRatio = 0.85f,
+                onDismiss = {
+                    preview.hide()
+                    host.destroy()
+                    if (!confirmed) {
+                        rootView.alpha = previousAlpha
+                        applyPointAlpha(previousPointAlpha)
+                    }
+                },
+            ) {
+                AppDialogPanel(
+                    title = "透明度",
+                    actions = {
+                        AppDialogActions(
+                            confirmText = "确定",
+                            onConfirm = {
+                                confirmed = true
+                                ClickerScriptStore.setWindowAlpha(this@FloatingWindowService, state.alpha)
+                                ClickerScriptStore.setPointAlpha(this@FloatingWindowService, state.pointAlpha)
+                                dialogRef?.dismiss()
+                            },
+                            cancelText = "取消",
+                            onCancel = { dialogRef?.dismiss() },
+                        )
+                    },
+                ) {
+                    AppOpacityDialogContent(
+                        state = state,
+                        minAlpha = ClickerScriptStore.MIN_WINDOW_ALPHA,
+                        onAlphaChange = {
+                            rootView.alpha = it
+                            preview.update(it)
+                        },
+                        onPointAlphaChange = {
+                            applyPointAlpha(it)
+                            preview.update(it)
+                        },
+                        onDraggingChange = { dragging, value ->
+                            if (dragging) preview.show(dialogRef, value) else preview.hide()
+                        },
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("FloatingWindow", "打开透明度弹框失败", e)
         }
-        isHidden = !isHidden
-        if (isHidden) {
-            // 进入隐藏模式
-            rootView.alpha = 0.5f
-            for (point in clickPoints) { point.view.visibility = View.GONE }
-            for ((_, pipePair) in pipeMap) { pipePair.first.visibility = View.GONE }
-            // 隐藏按钮图标切换为“显示”、其余按钮置灰，均由 ui.isHidden 派生自动刷新
-            Toast.makeText(this, "已隐藏点击点", Toast.LENGTH_SHORT).show()
-        } else {
-            // 退出隐藏模式
-            rootView.alpha = 1.0f
-            for (point in clickPoints) { point.view.visibility = View.VISIBLE }
-            for ((_, pipePair) in pipeMap) { pipePair.first.visibility = View.VISIBLE }
-            // 图标与按钮可用性同样由 ui.isHidden 派生自动恢复
-            Toast.makeText(this, "已显示点击点", Toast.LENGTH_SHORT).show()
+    }
+
+    /** 应用点位透明度；运行期点位被临时压到 ≤0.3，停不下来时等 stopRunning 恢复 */
+    private fun applyPointAlpha(alpha: Float) {
+        pointAlpha = alpha
+        if (isRunning) return
+        for (point in clickPoints) {
+            point.view.alpha = alpha
+        }
+        for ((_, pipePair) in pipeMap) {
+            pipePair.first.alpha = alpha
+        }
+    }
+
+    /** 单行输入弹框（保存脚本 / 重命名脚本共用） */
+    private fun showInputDialog(
+        title: String,
+        initial: String,
+        hint: String,
+        maxLen: Int,
+        onConfirm: (String) -> Unit,
+    ) {
+        val state = ClickerInputDialogState().apply { value = initial }
+        val host = ServiceComposeHost()
+        var dialogRef: AlertDialog? = null
+        dialogRef = ServiceDialogs.show(
+            service = this,
+            host = host,
+            widthRatio = 0.85f,
+            onDismiss = { host.destroy() },
+        ) {
+            AppDialogPanel(
+                title = title,
+                actions = {
+                    AppDialogActions(
+                        confirmText = "确定",
+                        onConfirm = {
+                            val value = state.value.trim()
+                            if (value.isEmpty()) {
+                                Toast.makeText(
+                                    this@FloatingWindowService,
+                                    "名称不能为空",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            } else {
+                                onConfirm(value)
+                                dialogRef?.dismiss()
+                            }
+                        },
+                        cancelText = "取消",
+                        onCancel = { dialogRef?.dismiss() },
+                    )
+                },
+            ) {
+                AppFieldLabel(text = "名称")
+                AppTextField(
+                    value = state.value,
+                    onValueChange = { state.value = it },
+                    modifier = Modifier.padding(top = Dimens.fieldGap),
+                    hint = hint,
+                    maxLength = maxLen,
+                )
+            }
+        }
+    }
+
+    /** 统一确认弹框：标题 + 说明 + 底部按钮（取消 / 主操作） */
+    private fun showConfirmDialog(
+        title: String,
+        message: String,
+        confirmText: String,
+        danger: Boolean = false,
+        onConfirm: () -> Unit = {},
+    ) {
+        val host = ServiceComposeHost()
+        var dialogRef: AlertDialog? = null
+        dialogRef = ServiceDialogs.show(
+            service = this,
+            host = host,
+            widthRatio = 0.85f,
+            onDismiss = { host.destroy() },
+        ) {
+            AppDialogPanel(
+                title = title,
+                actions = {
+                    AppDialogActions(
+                        confirmText = confirmText,
+                        onConfirm = {
+                            onConfirm()
+                            dialogRef?.dismiss()
+                        },
+                        cancelText = "取消",
+                        onCancel = { dialogRef?.dismiss() },
+                        confirmVariant = if (danger) AppButtonVariant.Danger else AppButtonVariant.Filled,
+                    )
+                },
+            ) {
+                AppConfirmMessage(text = message)
+            }
         }
     }
 }
