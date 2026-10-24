@@ -4,19 +4,36 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.os.Build
-import android.text.InputFilter
-import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.text.input.KeyboardType
+import com.hpu.autoclicker.core.components.AppDialogActions
+import com.hpu.autoclicker.core.components.AppDialogPanel
+import com.hpu.autoclicker.core.components.AppTextField
+import com.hpu.autoclicker.core.theme.AutoClickerTheme
+import com.hpu.autoclicker.core.theme.Dimens
+import com.hpu.autoclicker.core.theme.OverlayPalette
+import com.hpu.autoclicker.core.ui.ServiceComposeHost
+import com.hpu.autoclicker.core.ui.stripPlatformPanel
 import kotlin.math.roundToInt
 
 /**
@@ -54,7 +71,16 @@ class RegionRatioBar(
 
     val view: View = HorizontalScrollView(context).apply {
         isHorizontalScrollBarEnabled = false
-        setBackgroundColor(0xCC000000.toInt())
+        // 底部一条细分隔线，把比例条与下方操作栏分开
+        background = LayerDrawable(
+            arrayOf(
+                ColorDrawable(OverlayPalette.bar.toArgb()),
+                ColorDrawable(OverlayPalette.divider.toArgb()),
+            )
+        ).apply {
+            setLayerSize(0, -1, dp(1))
+            setLayerGravity(0, Gravity.BOTTOM)
+        }
         addView(
             chipRow,
             ViewGroup.LayoutParams(
@@ -79,7 +105,7 @@ class RegionRatioBar(
 
     private fun label(text: String): TextView = TextView(context).apply {
         this.text = text
-        setTextColor(0xB3FFFFFF.toInt())
+        setTextColor(OverlayPalette.onBarMuted.toArgb())
         textSize = 12f
         setPadding(0, 0, dp(8), 0)
     }
@@ -90,7 +116,7 @@ class RegionRatioBar(
             setTextColor(Color.WHITE)
             textSize = 13f
             gravity = Gravity.CENTER
-            setPadding(dp(12), dp(6), dp(12), dp(6))
+            setPadding(dp(14), dp(7), dp(14), dp(7))
             background = chipBackground(false)
             isClickable = true
             isFocusable = true
@@ -103,39 +129,81 @@ class RegionRatioBar(
 
     private fun markSelected(chip: TextView) {
         selectedChip?.background = chipBackground(false)
+        selectedChip?.setTextColor(Color.WHITE)
         selectedChip = chip
         chip.background = chipBackground(true)
     }
 
     private fun chipBackground(selected: Boolean): GradientDrawable = GradientDrawable().apply {
         cornerRadius = dp(16).toFloat()
-        setColor(if (selected) 0xFF0F6E7D.toInt() else 0x33FFFFFF)
+        setColor(if (selected) OverlayPalette.brand.toArgb() else OverlayPalette.chipIdle.toArgb())
     }
 
-    /** 自定义比例：宽/高两个数字输入框 */
+    /** 自定义比例：宽/高两个数字输入框（走统一弹框外框） */
     private fun showCustomDialog() {
-        val inputs = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(24), dp(8), dp(24), 0)
+        val host = ServiceComposeHost()
+        val state = RatioInputState()
+        var dialogRef: AlertDialog? = null
+        val compose = ComposeView(context)
+        host.attach(compose)
+        compose.setContent {
+            AutoClickerTheme {
+                AppDialogPanel(
+                    title = "自定义裁剪比例",
+                    subtitle = "填写裁剪区域的宽与高（像素）",
+                    actions = {
+                        AppDialogActions(
+                            confirmText = "应用",
+                            onConfirm = {
+                                val w = state.width.toIntOrNull()
+                                val h = state.height.toIntOrNull()
+                                if (w == null || h == null || w <= 0 || h <= 0) {
+                                    Toast.makeText(
+                                        context,
+                                        "请输入大于 0 的宽高",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                } else {
+                                    onRatioChanged(w.toFloat() / h.toFloat())
+                                    customChip?.let {
+                                        it.text = "自定义 $w:$h"
+                                        markSelected(it)
+                                    }
+                                    dialogRef?.dismiss()
+                                }
+                            },
+                            cancelText = "取消",
+                            onCancel = { dialogRef?.dismiss() },
+                        )
+                    },
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(Dimens.space8)) {
+                        AppTextField(
+                            value = state.width,
+                            onValueChange = { state.width = it.filter(Char::isDigit) },
+                            modifier = Modifier.weight(1f),
+                            hint = "宽",
+                            keyboardType = KeyboardType.Number,
+                        )
+                        AppTextField(
+                            value = state.height,
+                            onValueChange = { state.height = it.filter(Char::isDigit) },
+                            modifier = Modifier.weight(1f),
+                            hint = "高",
+                            keyboardType = KeyboardType.Number,
+                        )
+                    }
+                }
+            }
         }
-        val widthInput = numberInput("宽")
-        val heightInput = numberInput("高")
-        val colon = TextView(context).apply {
-            text = " : "
-            textSize = 16f
-            gravity = Gravity.CENTER
-        }
-        inputs.addView(widthInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        inputs.addView(colon)
-        inputs.addView(heightInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
-        val dialog = AlertDialog.Builder(context)
-            .setTitle("自定义裁剪比例（宽 : 高）")
-            .setView(inputs)
-            .setPositiveButton("应用", null)
-            .setNegativeButton("取消", null)
-            .create()
+        val dialog = AlertDialog.Builder(context).setView(compose).create()
+        dialogRef = dialog
+
+        // 窗口根视图挂宿主 Owner（必须在 show() 之前，原因见 ServiceComposeHost.attachWindowRoot）
+        dialog.window?.decorView?.let { host.attachWindowRoot(it) }
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.setOnDismissListener { host.destroy() }
 
         // Service 浮层场景必须显式指定 overlay 窗口类型，否则 BadTokenException
         if (context !is Activity) {
@@ -148,43 +216,24 @@ class RegionRatioBar(
             )
         }
 
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val w = widthInput.text.toString().toIntOrNull()
-                val h = heightInput.text.toString().toIntOrNull()
-                if (w == null || h == null || w <= 0 || h <= 0) {
-                    Toast.makeText(context, "请输入大于 0 的宽高", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-                val ratio = w.toFloat() / h.toFloat()
-                onRatioChanged(ratio)
-                customChip?.let {
-                    it.text = "自定义 $w:$h"
-                    markSelected(it)
-                }
-                dialog.dismiss()
-            }
-        }
-
         dialog.show()
-        if (context !is Activity) {
-            // overlay 弹框默认带 FLAG_ALT_FOCUSABLE_IM，会导致软键盘不弹
-            dialog.window?.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
-            val dm = context.resources.displayMetrics
-            dialog.window?.setLayout(
-                (dm.widthPixels * 0.85f).toInt(),
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            )
-        }
-    }
-
-    private fun numberInput(hint: String): EditText = EditText(context).apply {
-        this.hint = hint
-        inputType = InputType.TYPE_CLASS_NUMBER
-        filters = arrayOf<InputFilter>(InputFilter.LengthFilter(4))
-        textSize = 16f
-        setPadding(dp(8), dp(8), dp(8), dp(8))
+        // overlay 弹框默认带 FLAG_ALT_FOCUSABLE_IM，会导致软键盘不弹
+        dialog.window?.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+        val dm = context.resources.displayMetrics
+        dialog.window?.setLayout(
+            (dm.widthPixels * 0.85f).toInt(),
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        )
+        // 去掉平台面板底，避免与自绘圆角面板叠成双层框
+        dialog.stripPlatformPanel()
     }
 
     private fun dp(v: Int) = (v * context.resources.displayMetrics.density).roundToInt()
+}
+
+/** 自定义比例弹框的输入状态 */
+@Stable
+private class RatioInputState {
+    var width by mutableStateOf("")
+    var height by mutableStateOf("")
 }

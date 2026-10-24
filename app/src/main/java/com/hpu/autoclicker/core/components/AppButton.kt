@@ -36,9 +36,10 @@ import com.hpu.autoclicker.core.theme.Dimens
  * - Outlined：次要操作（白底 + 细描边，浮在浅色背景上依然清晰）
  * - Text：弱化操作（无底色）
  * - Danger：破坏性操作（关闭 / 删除）
+ * - DangerText：破坏性操作的弱化形态（红色文字、无底色，用于弹框底部的删除入口）
  * - Success：完成态（权限就绪等）
  */
-enum class AppButtonVariant { Filled, Outlined, Text, Danger, Success }
+enum class AppButtonVariant { Filled, Outlined, Text, Danger, DangerText, Success }
 
 @Composable
 fun AppButton(
@@ -147,6 +148,18 @@ fun AppButton(
             contentPadding = contentPadding,
             colors = ButtonDefaults.textButtonColors(
                 contentColor = scheme.primary,
+                disabledContentColor = scheme.outline,
+            ),
+        ) { label() }
+
+        AppButtonVariant.DangerText -> TextButton(
+            onClick = onClick,
+            modifier = baseModifier,
+            enabled = finalEnabled,
+            shape = shape,
+            contentPadding = contentPadding,
+            colors = ButtonDefaults.textButtonColors(
+                contentColor = scheme.error,
                 disabledContentColor = scheme.outline,
             ),
         ) { label() }

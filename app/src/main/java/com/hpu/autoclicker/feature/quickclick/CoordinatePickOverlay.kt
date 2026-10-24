@@ -16,6 +16,8 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.compose.ui.graphics.toArgb
+import com.hpu.autoclicker.core.theme.OverlayPalette
 import kotlin.math.roundToInt
 
 /**
@@ -67,13 +69,14 @@ class CoordinatePickOverlay(
 
         val hint = TextView(context).apply {
             text = "点击屏幕任意位置获取坐标，按返回键退出"
-            setTextColor(Color.WHITE)
-            textSize = 14f
+            setTextColor(OverlayPalette.accent.toArgb())
+            textSize = 13f
             gravity = Gravity.CENTER
             setPadding(dp(16), dp(8), dp(16), dp(8))
             background = GradientDrawable().apply {
-                cornerRadius = dp(20).toFloat()
-                setColor(0xCC000000.toInt())
+                cornerRadius = dp(16).toFloat()
+                setColor(OverlayPalette.bar.toArgb())
+                setStroke(dp(1), OverlayPalette.divider.toArgb())
             }
         }
         overlay.addView(
@@ -132,24 +135,24 @@ class CoordinatePickOverlay(
         private val density = resources.displayMetrics.density
         private val gridStep = 40f * density
 
-        private val scrimPaint = Paint().apply { color = 0x66000000 }
+        private val scrimPaint = Paint().apply { color = OverlayPalette.scrimSoft.toArgb() }
         private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0x26FFFFFF
+            color = OverlayPalette.grid.toArgb()
             strokeWidth = 1f
             style = Paint.Style.STROKE
         }
         private val crossPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFF5AD1E0.toInt()
+            color = OverlayPalette.accent.toArgb()
             strokeWidth = 2f * density
             style = Paint.Style.STROKE
         }
         private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFF5AD1E0.toInt()
+            color = OverlayPalette.accent.toArgb()
             strokeWidth = 2f * density
             style = Paint.Style.STROKE
         }
         private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xE6000000.toInt()
+            color = OverlayPalette.bar.toArgb()
             style = Paint.Style.FILL
         }
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {

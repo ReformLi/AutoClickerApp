@@ -22,11 +22,26 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
 import android.widget.Toast
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import com.hpu.autoclicker.core.accessibility.AutoClickerAccessibilityService
+import com.hpu.autoclicker.core.components.AppButton
+import com.hpu.autoclicker.core.components.AppButtonVariant
+import com.hpu.autoclicker.core.components.AppConfirmMessage
+import com.hpu.autoclicker.core.components.AppDialogActions
+import com.hpu.autoclicker.core.components.AppDialogPanel
+import com.hpu.autoclicker.core.components.AppFieldLabel
+import com.hpu.autoclicker.core.components.AppTextField
+import com.hpu.autoclicker.core.theme.Dimens
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
+import com.hpu.autoclicker.core.ui.ServiceDialogs
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -377,14 +392,41 @@ class QuickClickService : Service() {
             stopSelf()
             return
         }
-        AlertDialog.Builder(this)
-            .setTitle("关闭悬浮窗")
-            .setMessage("当前有未保存的按钮，关闭前是否保存？")
-            .setPositiveButton("保存并关闭") { _, _ -> saveAndClose() }
-            .setNeutralButton("不保存关闭") { _, _ -> stopSelf() }
-            .setNegativeButton("取消", null)
-            .create()
-            .also { showOverlayDialog(it) }
+        val host = ServiceComposeHost()
+        var dialogRef: AlertDialog? = null
+        dialogRef = ServiceDialogs.show(
+            service = this,
+            host = host,
+            widthRatio = 0.85f,
+            onDismiss = { host.destroy() },
+        ) {
+            AppDialogPanel(
+                title = "关闭悬浮窗",
+                actions = {
+                    AppButton(
+                        text = "不保存关闭",
+                        onClick = {
+                            dialogRef?.dismiss()
+                            stopSelf()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        variant = AppButtonVariant.Outlined,
+                    )
+                    Spacer(Modifier.height(Dimens.space8))
+                    AppDialogActions(
+                        confirmText = "保存并关闭",
+                        onConfirm = {
+                            dialogRef?.dismiss()
+                            saveAndClose()
+                        },
+                        cancelText = "取消",
+                        onCancel = { dialogRef?.dismiss() },
+                    )
+                },
+            ) {
+                AppConfirmMessage(text = "当前有未保存的按钮，关闭前是否保存？")
+            }
+        }
     }
 
     /**
@@ -426,35 +468,37 @@ class QuickClickService : Service() {
             val state = OpacityDialogState().apply { alpha = previousAlpha }
             var confirmed = false
             val host = ServiceComposeHost()
-            val content = ComposeView(this)
-            host.attach(content)
-            content.setContent {
-                AutoClickerTheme {
+            var dialogRef: AlertDialog? = null
+            dialogRef = ServiceDialogs.show(
+                service = this,
+                host = host,
+                widthRatio = 0.85f,
+                onDismiss = {
+                    host.destroy()
+                    if (!confirmed) root.alpha = previousAlpha
+                },
+            ) {
+                AppDialogPanel(
+                    title = "悬浮窗透明度",
+                    actions = {
+                        AppDialogActions(
+                            confirmText = "确定",
+                            onConfirm = {
+                                confirmed = true
+                                QuickClickStore.setWindowAlpha(this@QuickClickService, state.alpha)
+                                dialogRef?.dismiss()
+                            },
+                            cancelText = "取消",
+                            onCancel = { dialogRef?.dismiss() },
+                        )
+                    },
+                ) {
                     OpacityDialogContent(
                         state = state,
                         onAlphaChange = { root.alpha = it },
                     )
                 }
             }
-            val dialog = AlertDialog.Builder(this)
-                .setTitle("悬浮窗透明度")
-                .setView(content)
-                .setPositiveButton("确定", null)
-                .setNegativeButton("取消", null)
-                .create()
-            dialog.window?.decorView?.let { host.attachWindowRoot(it) }
-            dialog.setOnShowListener {
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                    confirmed = true
-                    QuickClickStore.setWindowAlpha(this, state.alpha)
-                    dialog.dismiss()
-                }
-            }
-            dialog.setOnDismissListener {
-                if (!confirmed) root.alpha = previousAlpha
-                host.destroy()
-            }
-            showOverlayDialog(dialog, widthRatio = 0.85f)
         } catch (e: Exception) {
             android.util.Log.e("QuickClick", "打开透明度弹框失败", e)
         }
@@ -976,14 +1020,57 @@ class QuickClickService : Service() {
                     if (editTarget.type == QuickClickConfig.TYPE_IMAGE) showAdvanced = true
                 }
             }
+            val isEdit = editTarget != null
             // 弹框实例需在 Compose 内容之前声明：截图/取点回调要先隐藏弹框窗口
             var dialogRef: AlertDialog? = null
             var committed = false
             val host = ServiceComposeHost()
-            val content = ComposeView(this)
-            host.attach(content)
-            content.setContent {
-                AutoClickerTheme {
+            // 「删除」只在编辑态出现：先收窄空安全，避免在 Compose lambda 里反复判空
+            val deleteAction: (@Composable RowScope.() -> Unit)? = if (editTarget != null) {
+                val target = editTarget
+                {
+                    AppButton(
+                        text = "删除",
+                        onClick = { confirmDeleteConfig(target, form, dialogRef) },
+                        variant = AppButtonVariant.DangerText,
+                    )
+                }
+            } else null
+
+            dialogRef = ServiceDialogs.show(
+                service = this,
+                host = host,
+                widthRatio = 0.9f,
+                onDismiss = {
+                    host.destroy()
+                    // 取消/关闭时清理本次新截取但未保存的模板图
+                    if (!committed) {
+                        val pendingImage = form.imageFileName
+                        val originalImage = editTarget?.takeIf { it.type == QuickClickConfig.TYPE_IMAGE }
+                            ?.imageFileName.orEmpty()
+                        if (pendingImage.isNotEmpty() && pendingImage != originalImage) {
+                            ImageStore.deleteImage(this, pendingImage)
+                        }
+                    }
+                },
+            ) {
+                AppDialogPanel(
+                    title = if (isEdit) "编辑快捷按钮" else "新建快捷按钮",
+                    actions = {
+                        AppDialogActions(
+                            confirmText = if (isEdit) "保存" else "新建",
+                            onConfirm = {
+                                if (commitConfigForm(form, editTarget)) {
+                                    committed = true
+                                    dialogRef?.dismiss()
+                                }
+                            },
+                            cancelText = "取消",
+                            onCancel = { dialogRef?.dismiss() },
+                            leading = deleteAction,
+                        )
+                    },
+                ) {
                     QuickConfigDialogContent(
                         state = form,
                         nameFilter = ::limitQuickName,   // 名称限长：含中文 ≤2 字、纯英文/数字 ≤3 字符
@@ -997,169 +1084,139 @@ class QuickClickService : Service() {
                     )
                 }
             }
-
-            val isEdit = editTarget != null
-            val builder = AlertDialog.Builder(this)
-                .setTitle(if (isEdit) "编辑快捷按钮" else "新建快捷按钮")
-                .setView(content)
-                .setPositiveButton(if (isEdit) "保存" else "新建", null)
-                .setNegativeButton("取消", null)
-            // 仅编辑弹框提供「删除」：点击后直接移除该子按钮并同步列表
-            if (editTarget != null) {
-                builder.setNeutralButton("删除", null)
-            }
-            val dialog = builder.create()
-            dialogRef = dialog
-
-            // 关键：把宿主 Owner 也挂到对话框窗口的 DecorView 上，且必须在 show() 之前。
-            // 对话框内 ComposeView 的窗口 Recomposer 是从 AlertDialogLayout 往上找 Owner 的，
-            // Service 场景没人给 DecorView 挂 Owner，漏掉这步会在弹框时崩。
-            dialog.window?.decorView?.let { host.attachWindowRoot(it) }
-
-            dialog.setOnShowListener {
-                // 手动接管确认按钮：校验不通过时不关闭弹窗
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                    val name = limitQuickName(
-                        form.name.trim().ifEmpty {
-                            // 编辑时清空名称 → 保留原名；新建时清空 → 「按钮N」
-                            editTarget?.name ?: "按钮${configs.size + 1}"
-                        }
-                    )
-                    val newConfig = when (form.type) {
-                        QuickClickConfig.TYPE_IMAGE -> {
-                            if (form.imageFileName.isEmpty()) {
-                                Toast.makeText(this, "请先截图或从相册选择模板图片", Toast.LENGTH_SHORT).show()
-                                return@setOnClickListener
-                            }
-                            QuickClickConfig(
-                                name = name,
-                                type = QuickClickConfig.TYPE_IMAGE,
-                                autoCollapse = form.autoCollapse,
-                                imageFileName = form.imageFileName,
-                                imageThreshold = form.thresholdOrDefault(),
-                                imageScale = form.scaleOrDefault(),
-                                imageRegion = if (form.regionFull) "full" else "last",
-                                imageGrayMode = form.grayMode,
-                                imageRetryCount = form.retryOrDefault(),
-                                imageRetryDelay = form.retryDelayOrDefault(),
-                                imageRegionRect = form.imageRegionRect,
-                            )
-                        }
-                        QuickClickConfig.TYPE_COORD -> {
-                            val x = form.coordXText.trim().toIntOrNull()
-                            val y = form.coordYText.trim().toIntOrNull()
-                            if (x == null || y == null) {
-                                Toast.makeText(this, "请输入有效的屏幕坐标", Toast.LENGTH_SHORT).show()
-                                return@setOnClickListener
-                            }
-                            val screenW = getScreenWidth()
-                            val screenH = getScreenHeight()
-                            if (x !in 0 until screenW || y !in 0 until screenH) {
-                                Toast.makeText(
-                                    this,
-                                    "坐标需在屏幕范围内（0~${screenW - 1} / 0~${screenH - 1}）",
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                                return@setOnClickListener
-                            }
-                            QuickClickConfig(
-                                name = name,
-                                type = QuickClickConfig.TYPE_COORD,
-                                x = x.toFloat(),
-                                y = y.toFloat(),
-                                autoCollapse = form.autoCollapse,
-                            )
-                        }
-                        else -> {
-                            val text = form.targetText.trim()
-                            if (text.isEmpty()) {
-                                Toast.makeText(this, "请输入目标文字", Toast.LENGTH_SHORT).show()
-                                return@setOnClickListener
-                            }
-                            QuickClickConfig(
-                                name = name,
-                                type = QuickClickConfig.TYPE_TEXT,
-                                text = text,
-                                autoCollapse = form.autoCollapse,
-                            )
-                        }
-                    }
-
-                    // 清理不再被任何按钮引用的模板图：换图时删旧图；改类型后删临时新图
-                    val oldImage = editTarget?.takeIf { it.type == QuickClickConfig.TYPE_IMAGE }
-                        ?.imageFileName.orEmpty()
-                    if (oldImage.isNotEmpty() &&
-                        (newConfig.type != QuickClickConfig.TYPE_IMAGE || newConfig.imageFileName != oldImage)
-                    ) {
-                        ImageStore.deleteImage(this, oldImage)
-                    }
-                    if (form.imageFileName.isNotEmpty() &&
-                        newConfig.type != QuickClickConfig.TYPE_IMAGE &&
-                        form.imageFileName != oldImage
-                    ) {
-                        ImageStore.deleteImage(this, form.imageFileName)
-                    }
-
-                    if (editTarget != null) {
-                        // 按引用定位原条目，原地替换保持顺序
-                        val idx = configs.indexOfFirst { it === editTarget }
-                        if (idx >= 0) configs[idx] = newConfig
-                        Toast.makeText(this, "已更新「$name」", Toast.LENGTH_SHORT).show()
-                    } else {
-                        // 新按钮插到列表末尾：编辑态视图中即位于 + 之后
-                        configs.add(newConfig)
-                        clampWindowY()
-                        Toast.makeText(this, "已新建「$name」", Toast.LENGTH_SHORT).show()
-                    }
-                    committed = true
-                    dialog.dismiss()
-                }
-                // 「删除」：立即从列表移除该按钮（mutableStateListOf 自动同步悬浮窗），无需再点保存
-                if (editTarget != null) {
-                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                        // 二次确认（覆盖在编辑弹框之上，与脚本删除确认同一路径）：
-                        // 确认 → 移除按钮并连同编辑弹框一起关闭；取消 → 仅关确认框，编辑弹框保留
-                        AlertDialog.Builder(this)
-                            .setTitle("删除按钮")
-                            .setMessage("确定删除按钮「${editTarget.name}」？")
-                            .setPositiveButton("删除") { _, _ ->
-                                val idx = configs.indexOfFirst { it === editTarget }
-                                if (idx >= 0) configs.removeAt(idx)
-                                // 删除图像按钮时清理其模板图（含本次新截但尚未保存的图）
-                                val oldImage = editTarget.imageFileName
-                                if (editTarget.type == QuickClickConfig.TYPE_IMAGE && oldImage.isNotEmpty()) {
-                                    ImageStore.deleteImage(this, oldImage)
-                                }
-                                if (form.imageFileName.isNotEmpty() && form.imageFileName != oldImage) {
-                                    ImageStore.deleteImage(this, form.imageFileName)
-                                }
-                                committed = true
-                                clampWindowY()
-                                Toast.makeText(this, "已删除「${editTarget.name}」", Toast.LENGTH_SHORT).show()
-                                dialog.dismiss()
-                            }
-                            .setNegativeButton("取消", null)
-                            .create()
-                            .also { showOverlayDialog(it) }
-                    }
-                }
-            }
-            dialog.setOnDismissListener {
-                host.destroy()
-                // 取消/关闭时清理本次新截取但未保存的模板图
-                if (!committed) {
-                    val pendingImage = form.imageFileName
-                    val originalImage = editTarget?.takeIf { it.type == QuickClickConfig.TYPE_IMAGE }
-                        ?.imageFileName.orEmpty()
-                    if (pendingImage.isNotEmpty() && pendingImage != originalImage) {
-                        ImageStore.deleteImage(this, pendingImage)
-                    }
-                }
-            }
-            // Service 弹窗必须挂到悬浮窗层，否则 BadTokenException（与旧功能处理一致）
-            showOverlayDialog(dialog)
         } catch (e: Exception) {
             android.util.Log.e("QuickClick", "打开配置弹框失败", e)
+        }
+    }
+
+    /**
+     * 提交「新建 / 编辑快捷按钮」表单：校验并写入按钮列表。
+     * 校验不通过时弹 Toast 并返回 false（弹框保持打开，用户可继续修改）。
+     */
+    private fun commitConfigForm(form: QuickConfigFormState, editTarget: QuickClickConfig?): Boolean {
+        val name = limitQuickName(
+            form.name.trim().ifEmpty {
+                // 编辑时清空名称 → 保留原名；新建时清空 → 「按钮N」
+                editTarget?.name ?: "按钮${configs.size + 1}"
+            }
+        )
+        val newConfig = when (form.type) {
+            QuickClickConfig.TYPE_IMAGE -> {
+                if (form.imageFileName.isEmpty()) {
+                    Toast.makeText(this, "请先截图或从相册选择模板图片", Toast.LENGTH_SHORT).show()
+                    return false
+                }
+                QuickClickConfig(
+                    name = name,
+                    type = QuickClickConfig.TYPE_IMAGE,
+                    autoCollapse = form.autoCollapse,
+                    imageFileName = form.imageFileName,
+                    imageThreshold = form.thresholdOrDefault(),
+                    imageScale = form.scaleOrDefault(),
+                    imageRegion = if (form.regionFull) "full" else "last",
+                    imageGrayMode = form.grayMode,
+                    imageRetryCount = form.retryOrDefault(),
+                    imageRetryDelay = form.retryDelayOrDefault(),
+                    imageRegionRect = form.imageRegionRect,
+                )
+            }
+            QuickClickConfig.TYPE_COORD -> {
+                val x = form.coordXText.trim().toIntOrNull()
+                val y = form.coordYText.trim().toIntOrNull()
+                if (x == null || y == null) {
+                    Toast.makeText(this, "请输入有效的屏幕坐标", Toast.LENGTH_SHORT).show()
+                    return false
+                }
+                val screenW = getScreenWidth()
+                val screenH = getScreenHeight()
+                if (x !in 0 until screenW || y !in 0 until screenH) {
+                    Toast.makeText(
+                        this,
+                        "坐标需在屏幕范围内（0~${screenW - 1} / 0~${screenH - 1}）",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return false
+                }
+                QuickClickConfig(
+                    name = name,
+                    type = QuickClickConfig.TYPE_COORD,
+                    x = x.toFloat(),
+                    y = y.toFloat(),
+                    autoCollapse = form.autoCollapse,
+                )
+            }
+            else -> {
+                val text = form.targetText.trim()
+                if (text.isEmpty()) {
+                    Toast.makeText(this, "请输入目标文字", Toast.LENGTH_SHORT).show()
+                    return false
+                }
+                QuickClickConfig(
+                    name = name,
+                    type = QuickClickConfig.TYPE_TEXT,
+                    text = text,
+                    autoCollapse = form.autoCollapse,
+                )
+            }
+        }
+
+        // 清理不再被任何按钮引用的模板图：换图时删旧图；改类型后删临时新图
+        val oldImage = editTarget?.takeIf { it.type == QuickClickConfig.TYPE_IMAGE }
+            ?.imageFileName.orEmpty()
+        if (oldImage.isNotEmpty() &&
+            (newConfig.type != QuickClickConfig.TYPE_IMAGE || newConfig.imageFileName != oldImage)
+        ) {
+            ImageStore.deleteImage(this, oldImage)
+        }
+        if (form.imageFileName.isNotEmpty() &&
+            newConfig.type != QuickClickConfig.TYPE_IMAGE &&
+            form.imageFileName != oldImage
+        ) {
+            ImageStore.deleteImage(this, form.imageFileName)
+        }
+
+        if (editTarget != null) {
+            // 按引用定位原条目，原地替换保持顺序
+            val idx = configs.indexOfFirst { it === editTarget }
+            if (idx >= 0) configs[idx] = newConfig
+            Toast.makeText(this, "已更新「$name」", Toast.LENGTH_SHORT).show()
+        } else {
+            // 新按钮插到列表末尾：编辑态视图中即位于 + 之后
+            configs.add(newConfig)
+            clampWindowY()
+            Toast.makeText(this, "已新建「$name」", Toast.LENGTH_SHORT).show()
+        }
+        return true
+    }
+
+    /**
+     * 「删除」二次确认：确认后移除该按钮并清理模板图，同时关闭编辑弹框。
+     * 确认框盖在编辑弹框之上，取消只关确认框，编辑弹框保留。
+     */
+    private fun confirmDeleteConfig(
+        editTarget: QuickClickConfig,
+        form: QuickConfigFormState,
+        parentDialog: AlertDialog?,
+    ) {
+        showConfirmDialog(
+            title = "删除按钮",
+            message = "确定删除按钮「${editTarget.name}」？",
+            confirmText = "删除",
+            danger = true,
+        ) {
+            val idx = configs.indexOfFirst { it === editTarget }
+            if (idx >= 0) configs.removeAt(idx)
+            // 删除图像按钮时清理其模板图（含本次新截但尚未保存的图）
+            val oldImage = editTarget.imageFileName
+            if (editTarget.type == QuickClickConfig.TYPE_IMAGE && oldImage.isNotEmpty()) {
+                ImageStore.deleteImage(this, oldImage)
+            }
+            if (form.imageFileName.isNotEmpty() && form.imageFileName != oldImage) {
+                ImageStore.deleteImage(this, form.imageFileName)
+            }
+            clampWindowY()
+            Toast.makeText(this, "已删除「${editTarget.name}」", Toast.LENGTH_SHORT).show()
+            parentDialog?.dismiss()
         }
     }
 
@@ -1173,41 +1230,42 @@ class QuickClickService : Service() {
     private fun showScriptManagerDialog() {
         try {
             // === 原：inflate(dialog_script_manager.xml) + buildScriptRow 动态添加行 ===
-            // === 现：ComposeView + ScriptManagerDialogContent，列表由状态驱动 ===
+            // === 现：统一弹框外框 + ScriptManagerDialogContent，列表由状态驱动 ===
             val state = ScriptManagerState()
             val host = ServiceComposeHost()
-            val content = ComposeView(this)
-            host.attach(content)
-
-            val dialog = AlertDialog.Builder(this)
-                .setTitle("脚本管理")
-                .setView(content)
-                .setNegativeButton("关闭", null)
-                .create()
-
-            // 把宿主 Owner 也挂到对话框窗口的 DecorView 上（必须在 show() 之前，原因见 ServiceComposeHost.attachWindowRoot）
-            dialog.window?.decorView?.let { host.attachWindowRoot(it) }
-
+            var dialogRef: AlertDialog? = null
             // 重新读取脚本列表 → 触发 Compose 刷新（等价原来的 removeAllViews + 逐行 addView）
             val refresh: () -> Unit = {
                 state.scripts = QuickClickStore.loadScripts(this)
             }
 
-            content.setContent {
-                AutoClickerTheme {
+            dialogRef = ServiceDialogs.show(
+                service = this,
+                host = host,
+                widthRatio = 0.9f,
+                onDismiss = { host.destroy() },
+            ) {
+                AppDialogPanel(
+                    title = "脚本管理",
+                    actions = {
+                        AppButton(
+                            text = "关闭",
+                            onClick = { dialogRef?.dismiss() },
+                            modifier = Modifier.fillMaxWidth(),
+                            variant = AppButtonVariant.Outlined,
+                        )
+                    },
+                ) {
                     ScriptManagerDialogContent(
                         state = state,
                         onSaveCurrent = { saveCurrentScript(refresh) },
-                        onLoadScript = { script -> handleLoadScript(script, dialog, refresh) },
+                        onLoadScript = { script -> handleLoadScript(script, dialogRef, refresh) },
                         onRenameScript = { script -> handleRenameScript(script, refresh) },
                         onDeleteScript = { script -> handleDeleteScript(script, refresh) },
                     )
                 }
             }
-
-            dialog.setOnDismissListener { host.destroy() }
             refresh()
-            showOverlayDialog(dialog)
         } catch (e: Exception) {
             android.util.Log.e("QuickClick", "打开脚本管理失败", e)
         }
@@ -1241,7 +1299,7 @@ class QuickClickService : Service() {
     }
 
     /** 点击脚本名称：加载/切换；悬浮框上已有按钮时先确认覆盖 */
-    private fun handleLoadScript(script: QuickScript, dialog: AlertDialog, onChanged: () -> Unit) {
+    private fun handleLoadScript(script: QuickScript, dialog: AlertDialog?, onChanged: () -> Unit) {
         when {
             script.configs.isEmpty() ->
                 Toast.makeText(this, "脚本「${script.name}」没有按钮", Toast.LENGTH_SHORT).show()
@@ -1266,86 +1324,97 @@ class QuickClickService : Service() {
 
     /** 「删除」：确认后删除脚本 */
     private fun handleDeleteScript(script: QuickScript, onChanged: () -> Unit) {
-        AlertDialog.Builder(this)
-            .setTitle("删除脚本")
-            .setMessage("确定删除脚本「${script.name}」？")
-            .setPositiveButton("删除") { _, _ ->
-                QuickClickStore.deleteScript(this, script.name)
-                // 当前列表来自被删脚本：此后视为未保存，关闭悬浮窗时会重新提示保存
-                if (currentScriptName == script.name) {
-                    currentScriptName = null
-                    savedSnapshot = null
-                }
-                onChanged()
-                Toast.makeText(this, "已删除脚本「${script.name}」", Toast.LENGTH_SHORT).show()
+        showConfirmDialog(
+            title = "删除脚本",
+            message = "确定删除脚本「${script.name}」？",
+            confirmText = "删除",
+            danger = true,
+        ) {
+            QuickClickStore.deleteScript(this, script.name)
+            // 当前列表来自被删脚本：此后视为未保存，关闭悬浮窗时会重新提示保存
+            if (currentScriptName == script.name) {
+                currentScriptName = null
+                savedSnapshot = null
             }
-            .setNegativeButton("取消", null)
-            .create()
-            .also { showOverlayDialog(it) }
+            onChanged()
+            Toast.makeText(this, "已删除脚本「${script.name}」", Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** 载入脚本：替换悬浮框上的按钮，并关闭脚本管理弹框 */
-    private fun loadScript(script: QuickScript, dialog: AlertDialog) {
+    private fun loadScript(script: QuickScript, dialog: AlertDialog?) {
         configs.clear()
         configs.addAll(script.configs)
         currentScriptName = script.name
         savedSnapshot = configs.toList()
         clampWindowY()
-        dialog.dismiss()
+        dialog?.dismiss()
         Toast.makeText(this, "已加载脚本「${script.name}」", Toast.LENGTH_SHORT).show()
     }
 
     /** 悬浮框上已有按钮时，加载脚本前确认覆盖 */
-    private fun confirmReplaceByScript(script: QuickScript, dialog: AlertDialog) {
-        AlertDialog.Builder(this)
-            .setTitle("加载脚本")
-            .setMessage("当前按键节点未保存，加载脚本「${script.name}」将覆盖它们，是否覆盖？")
-            .setPositiveButton("覆盖") { _, _ -> loadScript(script, dialog) }
-            .setNegativeButton("取消", null)
-            .create()
-            .also { showOverlayDialog(it) }
+    private fun confirmReplaceByScript(script: QuickScript, dialog: AlertDialog?) {
+        showConfirmDialog(
+            title = "加载脚本",
+            message = "当前按键节点未保存，加载脚本「${script.name}」将覆盖它们，是否覆盖？",
+            confirmText = "覆盖",
+        ) {
+            loadScript(script, dialog)
+        }
     }
 
     /** 同名脚本覆盖确认 */
     private fun confirmOverwrite(scriptName: String, onConfirm: () -> Unit) {
-        AlertDialog.Builder(this)
-            .setTitle("覆盖脚本")
-            .setMessage("脚本「$scriptName」已存在，是否覆盖？")
-            .setPositiveButton("覆盖") { _, _ -> onConfirm() }
-            .setNegativeButton("取消", null)
-            .create()
-            .also { showOverlayDialog(it) }
+        showConfirmDialog(
+            title = "覆盖脚本",
+            message = "脚本「$scriptName」已存在，是否覆盖？",
+            confirmText = "覆盖",
+            onConfirm = onConfirm,
+        )
     }
 
     /**
-     * Service 内弹窗统一挂到悬浮窗层（否则 BadTokenException，与旧功能处理一致），
-     * 并统一设置宽度。
-     *
-     * 这里还必须清掉系统给 TYPE_APPLICATION_OVERLAY 弹框附加的 FLAG_ALT_FOCUSABLE_IM：
-     * 该 flag 对「可聚焦窗口」的含义是「本窗口不与输入法交互」——输入法会被压到本窗口
-     * 下方、本窗口永远不会成为输入法的输入目标（InputMethodManager 的 mServedView 一直
-     * 停在上一个 Activity 的 DecorView 上），表现为输入框有光标、能收到文本，但软键盘不弹。
-     * 因此凡带输入框的弹框（新建按钮、保存/重命名脚本，以及连点器的设置弹框）都要走这里。
+     * 统一确认弹框：标题 + 说明 + 底部按钮（取消 / 主操作）。
+     * 危险操作（删除）把主按钮换成 Danger 变体（红色实心）。
      */
-    private fun showOverlayDialog(dialog: AlertDialog, widthRatio: Float = 0.9f) {
-        dialog.window?.setType(
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            else
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
-        )
-        dialog.show()
-        dialog.window?.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
-        dialog.window?.setLayout(
-            (getScreenWidth() * widthRatio).toInt(),
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
+    private fun showConfirmDialog(
+        title: String,
+        message: String,
+        confirmText: String,
+        danger: Boolean = false,
+        onConfirm: () -> Unit = {},
+    ) {
+        val host = ServiceComposeHost()
+        var dialogRef: AlertDialog? = null
+        dialogRef = ServiceDialogs.show(
+            service = this,
+            host = host,
+            widthRatio = 0.85f,
+            onDismiss = { host.destroy() },
+        ) {
+            AppDialogPanel(
+                title = title,
+                actions = {
+                    AppDialogActions(
+                        confirmText = confirmText,
+                        onConfirm = {
+                            onConfirm()
+                            dialogRef?.dismiss()
+                        },
+                        cancelText = "取消",
+                        onCancel = { dialogRef?.dismiss() },
+                        confirmVariant = if (danger) AppButtonVariant.Danger else AppButtonVariant.Filled,
+                    )
+                },
+            ) {
+                AppConfirmMessage(text = message)
+            }
+        }
     }
 
     /**
      * 单行输入弹框（保存脚本 / 重命名共用）。
-     * 此处仍用原生 EditText：该弹框不涉及 XML 布局文件，且原生输入框在该场景下更稳。
+     * 输入框用 AppTextField（保留原生 EditText 内核，保证 overlay 内软键盘可弹）。
      */
     private fun showInputDialog(
         title: String,
@@ -1354,31 +1423,44 @@ class QuickClickService : Service() {
         maxLen: Int,
         onConfirm: (String) -> Unit
     ) {
-        val input = EditText(this).apply {
-            setText(initial)
-            setHint(hint)
-            isSingleLine = true
-            filters = arrayOf<InputFilter>(InputFilter.LengthFilter(maxLen))
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(title)
-            .setView(input)
-            .setPositiveButton("确定", null)
-            .setNegativeButton("取消", null)
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val value = input.text.toString().trim()
-                if (value.isEmpty()) {
-                    Toast.makeText(this, "名称不能为空", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-                onConfirm(value)
-                dialog.dismiss()
+        val state = InputDialogState().apply { value = initial }
+        val host = ServiceComposeHost()
+        var dialogRef: AlertDialog? = null
+        dialogRef = ServiceDialogs.show(
+            service = this,
+            host = host,
+            widthRatio = 0.85f,
+            onDismiss = { host.destroy() },
+        ) {
+            AppDialogPanel(
+                title = title,
+                actions = {
+                    AppDialogActions(
+                        confirmText = "确定",
+                        onConfirm = {
+                            val value = state.value.trim()
+                            if (value.isEmpty()) {
+                                Toast.makeText(this@QuickClickService, "名称不能为空", Toast.LENGTH_SHORT).show()
+                            } else {
+                                onConfirm(value)
+                                dialogRef?.dismiss()
+                            }
+                        },
+                        cancelText = "取消",
+                        onCancel = { dialogRef?.dismiss() },
+                    )
+                },
+            ) {
+                AppFieldLabel(text = "名称")
+                AppTextField(
+                    value = state.value,
+                    onValueChange = { state.value = it },
+                    modifier = Modifier.padding(top = Dimens.fieldGap),
+                    hint = hint,
+                    maxLength = maxLen,
+                )
             }
         }
-        showOverlayDialog(dialog)
     }
 
     /** 兜底截断按钮名称（防止绕过输入过滤器） */

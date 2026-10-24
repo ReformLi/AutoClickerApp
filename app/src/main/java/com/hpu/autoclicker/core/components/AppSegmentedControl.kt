@@ -13,7 +13,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import com.hpu.autoclicker.core.theme.Dimens
 
@@ -31,11 +30,12 @@ fun AppSegmentedControl(
     modifier: Modifier = Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
+    // 轨道与分段都用 background(color, shape) 画圆角，不加 Modifier.clip：
+    // clip 会连带裁掉点击分发，段的圆角处会变成点不动的死区。
     Row(
         modifier = modifier
             .height(Dimens.buttonHeight)
-            .clip(MaterialTheme.shapes.small)
-            .background(scheme.surfaceContainer)
+            .background(scheme.surfaceContainer, MaterialTheme.shapes.small)
             .border(Dimens.strokeThin, scheme.outlineVariant, MaterialTheme.shapes.small)
             .padding(Dimens.space4),
     ) {
@@ -45,8 +45,10 @@ fun AppSegmentedControl(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .clip(MaterialTheme.shapes.extraSmall)
-                    .background(if (selected) scheme.primary else Color.Transparent)
+                    .background(
+                        if (selected) scheme.primary else Color.Transparent,
+                        MaterialTheme.shapes.extraSmall,
+                    )
                     .clickable { onSelect(index) },
                 contentAlignment = Alignment.Center,
             ) {

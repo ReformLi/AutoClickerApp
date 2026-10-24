@@ -4,7 +4,6 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import androidx.activity.ComponentActivity
@@ -12,6 +11,8 @@ import androidx.activity.addCallback
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import com.hpu.autoclicker.core.theme.Dimens
+import com.hpu.autoclicker.core.ui.createOverlayBarBackground
+import com.hpu.autoclicker.core.ui.createOverlayButton
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -72,27 +73,26 @@ class ImagePickActivity : ComponentActivity() {
         )
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xCC000000.toInt())
+            background = createOverlayBarBackground(this@ImagePickActivity)
             val pad = (Dimens.space16.value * resources.displayMetrics.density).roundToInt()
-            setPadding(0, pad / 2, 0, pad / 2)
+            setPadding(pad, pad / 2, pad, pad / 2)
         }
-        val btnCancel = Button(this).apply {
-            text = "取消"; setOnClickListener { finishWithResult(null) }
+        val btnCancel = createOverlayButton(this, "取消", filled = false) {
+            finishWithResult(null)
         }
-        val btnOk = Button(this).apply {
-            text = "裁剪并确定"
-            setOnClickListener {
-                val cropped = sv.cropSelected()
-                if (cropped == null) {
-                    finishWithResult(null)
-                    return@setOnClickListener
-                }
-                val name = ImageStore.generateFileName("pick")
-                val saved = ImageStore.saveImage(this@ImagePickActivity, cropped, name)
-                finishWithResult(if (saved) name else null, cropped.width, cropped.height)
+        val btnOk = createOverlayButton(this, "裁剪并确定", filled = true) {
+            val cropped = sv.cropSelected()
+            if (cropped == null) {
+                finishWithResult(null)
+                return@createOverlayButton
             }
+            val name = ImageStore.generateFileName("pick")
+            val saved = ImageStore.saveImage(this@ImagePickActivity, cropped, name)
+            finishWithResult(if (saved) name else null, cropped.width, cropped.height)
         }
-        btnCancel.layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
+        btnCancel.layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+            marginEnd = dp(8)
+        }
         btnOk.layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
         bar.addView(btnCancel)
         bar.addView(btnOk)

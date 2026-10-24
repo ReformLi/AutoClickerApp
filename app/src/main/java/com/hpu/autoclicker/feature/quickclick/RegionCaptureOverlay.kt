@@ -2,19 +2,20 @@ package com.hpu.autoclicker.feature.quickclick
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
 import android.view.Gravity
 import android.view.KeyEvent
-import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import androidx.compose.ui.graphics.toArgb
 import com.hpu.autoclicker.core.theme.Dimens
+import com.hpu.autoclicker.core.theme.OverlayPalette
+import com.hpu.autoclicker.core.ui.createOverlayBarBackground
+import com.hpu.autoclicker.core.ui.createOverlayButton
 import kotlin.math.roundToInt
 
 /**
@@ -55,7 +56,7 @@ class RegionCaptureOverlay(
                 return super.dispatchKeyEvent(event)
             }
         }.apply {
-            setBackgroundColor(Color.parseColor("#20202A"))
+            setBackgroundColor(OverlayPalette.canvas.toArgb())
             isFocusable = true
             isFocusableInTouchMode = true
         }
@@ -72,20 +73,20 @@ class RegionCaptureOverlay(
         val bar = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#CC000000"))
+            background = createOverlayBarBackground(context)
             val pad = (Dimens.space16.value * context.resources.displayMetrics.density).roundToInt()
             setPadding(pad, pad / 2, pad, pad / 2)
         }
-        val btnConfirm = Button(context).apply {
-            text = "确定"
-            setOnClickListener {
-                val cropped = sv.cropSelected()
-                dismiss()
-                if (cropped != null) listener.onConfirm(cropped, currentRect)
-                else listener.onCancel()
-            }
+        val btnConfirm = createOverlayButton(context, "确定", filled = true) {
+            val cropped = sv.cropSelected()
+            dismiss()
+            if (cropped != null) listener.onConfirm(cropped, currentRect)
+            else listener.onCancel()
         }
-        bar.addView(confirmBtnWrap(btnConfirm))
+        btnConfirm.layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(48)
+        )
+        bar.addView(btnConfirm)
 
         // 底部纵向容器：比例选择条 + 操作栏
         val bottom = LinearLayout(context).apply {
@@ -133,16 +134,6 @@ class RegionCaptureOverlay(
         } catch (e: Exception) {
             android.util.Log.e("RegionCapture", "addView 失败", e)
             listener.onCancel()
-        }
-    }
-
-    private fun confirmBtnWrap(b: Button): View {
-        b.setBackgroundColor(Color.parseColor("#0F6E7D"))
-        b.setTextColor(Color.WHITE)
-        return b.apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)
-            )
         }
     }
 

@@ -3,7 +3,6 @@ package com.hpu.autoclicker.feature.quickclick
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PointF
@@ -11,6 +10,8 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
+import androidx.compose.ui.graphics.toArgb
+import com.hpu.autoclicker.core.theme.OverlayPalette
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -53,19 +54,19 @@ class RegionSelectView(context: Context) : View(context) {
 
     // ===== 画笔 =====
     private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val scrimPaint = Paint().apply { color = Color.parseColor("#99000000") }
+    private val scrimPaint = Paint().apply { color = OverlayPalette.scrim.toArgb() }
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#55FFFFFF")
+        color = OverlayPalette.grid.toArgb()
         strokeWidth = 1f
         style = Paint.Style.STROKE
     }
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
+        color = OverlayPalette.accent.toArgb()
         strokeWidth = 3f
         style = Paint.Style.STROKE
     }
     private val thirdPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#88FFFFFF")
+        color = OverlayPalette.thirds.toArgb()
         strokeWidth = 1.5f
         style = Paint.Style.STROKE
     }
@@ -177,7 +178,7 @@ class RegionSelectView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val src = source ?: return
-        canvas.drawColor(Color.parseColor("#20202A"))
+        canvas.drawColor(OverlayPalette.canvas.toArgb())
 
         val l = toViewX(0f)
         val t = toViewY(0f)

@@ -32,7 +32,11 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.core.content.ContextCompat
 import androidx.core.view.doOnLayout
 import com.hpu.autoclicker.core.accessibility.AutoClickerAccessibilityService
+import com.hpu.autoclicker.core.components.AppDialogActions
+import com.hpu.autoclicker.core.components.AppDialogPanel
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
+import com.hpu.autoclicker.core.ui.ServiceDialogs
+import com.hpu.autoclicker.core.ui.stripPlatformPanel
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
 import org.json.JSONArray
 import org.json.JSONObject
@@ -668,60 +672,45 @@ class FloatingWindowService : Service() {
         settingsDialog?.dismiss()
 
         // === 原：inflate(dialog_settings.xml) + findViewById 各控件 ===
-        // === 现：ComposeView + SettingsDialogContent（表单值存于 SettingsDialogState） ===
+        // === 现：统一弹框外框 + SettingsDialogContent（表单值存于 SettingsDialogState） ===
         val form = SettingsDialogState().apply {
             // 显示当前循环数值
             loopCount = if (maxLoopCount <= 0) "" else maxLoopCount.toString()
         }
         val host = ServiceComposeHost()
-        val content = ComposeView(this)
-        host.attach(content)
-        content.setContent {
-            AutoClickerTheme {
+        settingsDialog = ServiceDialogs.show(
+            service = this,
+            host = host,
+            widthRatio = 0.9f,
+            onDismiss = { host.destroy() },
+        ) {
+            AppDialogPanel(
+                title = "悬浮窗设置",
+                actions = {
+                    AppDialogActions(
+                        confirmText = "确定",
+                        onConfirm = {
+                            // 确定：保存循环值后关闭
+                            maxLoopCount = form.loopCount.toIntOrNull() ?: 0
+                            if (maxLoopCount < 0) maxLoopCount = 0
+                            Toast.makeText(
+                                this@FloatingWindowService,
+                                "循环次数已更新",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                            settingsDialog?.dismiss()
+                        },
+                        cancelText = "取消",
+                        onCancel = { settingsDialog?.dismiss() },
+                    )
+                },
+            ) {
                 SettingsDialogContent(
                     state = form,
                     onSavePoints = { savePointsToFile(); settingsDialog?.dismiss() },
                     onLoadPoints = { loadPointsFromFile(); settingsDialog?.dismiss() },
-                    // 取消：直接关闭
-                    onCancel = { settingsDialog?.dismiss() },
-                    // 确定：保存循环值后关闭
-                    onConfirm = {
-                        maxLoopCount = form.loopCount.toIntOrNull() ?: 0
-                        if (maxLoopCount < 0) maxLoopCount = 0
-                        Toast.makeText(this, "循环次数已更新", Toast.LENGTH_SHORT).show()
-                        settingsDialog?.dismiss()
-                    },
                 )
             }
-        }
-
-        val builder = AlertDialog.Builder(this).setView(content).setCancelable(true)
-        settingsDialog = builder.create()
-
-        // 把宿主 Owner 也挂到对话框窗口的 DecorView 上（必须在 show() 之前，原因见 ServiceComposeHost.attachWindowRoot）
-        settingsDialog?.window?.decorView?.let { host.attachWindowRoot(it) }
-
-        settingsDialog?.apply {
-            window?.setType(
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                } else {
-                    @Suppress("DEPRECATION")
-                    WindowManager.LayoutParams.TYPE_PHONE
-                }
-            )
-            window?.setGravity(Gravity.CENTER)
-            window?.setLayout(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-            window?.setBackgroundDrawableResource(android.R.color.transparent)
-            setCanceledOnTouchOutside(true)
-            setOnDismissListener { host.destroy() }
-            show()
-            // 清掉系统给 TYPE_APPLICATION_OVERLAY 弹框附加的 FLAG_ALT_FOCUSABLE_IM，
-            // 否则弹框内的输入框（循环次数等）点了也不会弹软键盘（原因见 QuickClickService.showOverlayDialog）
-            window?.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
         }
     }
 
@@ -1121,23 +1110,29 @@ class FloatingWindowService : Service() {
         host.attach(content)
         content.setContent {
             AutoClickerTheme {
-                PointSettingsDialogContent(
-                    state = form,
-                    // 取消
-                    onCancel = { pointSettingsDialog?.dismiss() },
-                    // 保存
-                    onConfirm = { savePointSettings(point, form) },
-                )
+                AppDialogPanel(
+                    title = "点击点设置",
+                    actions = {
+                        AppDialogActions(
+                            confirmText = "保存",
+                            onConfirm = { savePointSettings(point, form) },
+                            cancelText = "取消",
+                            onCancel = { pointSettingsDialog?.dismiss() },
+                        )
+                    },
+                ) {
+                    PointSettingsDialogContent(state = form)
+                }
             }
         }
         // 弹框内部区域吞掉触摸，避免落到外层容器的「点空白关闭」监听上（等价原 dialogView.isClickable = true）
         content.setOnTouchListener { _, _ -> true }
 
-        // 外层容器铺满屏幕，左右各保留 5% 空隙；点击上下左右空白区域等同于取消
+        // 外层容器铺满屏幕，四周各留 6% 空隙；点击上下左右空白区域等同于取消
         val wrapper = FrameLayout(this).apply {
             val metrics = resources.displayMetrics
-            val padH = (metrics.widthPixels * 0.05).toInt()
-            val padV = (metrics.heightPixels * 0.05).toInt()
+            val padH = (metrics.widthPixels * 0.06).toInt()
+            val padV = (metrics.heightPixels * 0.06).toInt()
             setPadding(padH, padV, padH, padV)
             isClickable = true
             setOnClickListener {
@@ -1147,7 +1142,7 @@ class FloatingWindowService : Service() {
                 content,
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.CENTER
                 )
             )
@@ -1184,6 +1179,8 @@ class FloatingWindowService : Service() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+            // 去掉平台面板底（9-patch 描边），只保留自绘面板
+            stripPlatformPanel()
         }
     }
 

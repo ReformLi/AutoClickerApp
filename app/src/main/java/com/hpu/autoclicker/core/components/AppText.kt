@@ -65,6 +65,19 @@ fun AppCaption(
 }
 
 /**
+ * 弹框标题（titleLarge）—— 比分组标题略大，用于弹框外框顶部，
+ * 与主页的 [AppSectionTitle] 拉开层次。
+ */
+@Composable
+fun AppDialogTitle(
+    text: String,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.onSurface,
+) {
+    Text(text = text, modifier = modifier, style = MaterialTheme.typography.titleLarge, color = color)
+}
+
+/**
  * 表单字段标签（labelMedium）—— 比 caption 稍重、颜色更实，
  * 用于「目标文字 / 相似度阈值」这类字段名，与说明性 caption 拉开层次。
  */

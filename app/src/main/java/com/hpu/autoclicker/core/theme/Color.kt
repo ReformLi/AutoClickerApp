@@ -173,3 +173,45 @@ internal val DarkSemantic = AppSemanticColors(
     warningContainer = DarkColor.warningContainer,
     onWarningContainer = DarkColor.onWarningContainer,
 )
+
+// ==================== 原生 View 浮层色板 ====================
+
+/**
+ * 截图框选 / 坐标拾取 / 比例条这类原生 View 浮层用的色值。
+ * 它们画在 Canvas / Drawable 上，读不到 Compose 的 ColorScheme，
+ * 因此在这里给出与 [LightColor] / [DarkColor] 同源的固定色，避免两套色板漂移。
+ */
+internal object OverlayPalette {
+    /** 浮层上的品牌实心块（按钮、选中比例）：品牌主色 + 白字 */
+    val brand = Color(0xFF0F6E7D)
+
+    /** 浮层上的品牌强调色（十字线、提示文字）：深色底上对比度更高 */
+    val accent = Color(0xFF5AD1E0)
+
+    /** 浮层底部操作栏底色 */
+    val bar = Color(0xE6000000)
+
+    /** 浮层操作栏与内容之间的分隔线 */
+    val divider = Color(0x33FFFFFF)
+
+    /** 半透明黑遮罩（置灰 + 网格的底） */
+    val scrim = Color(0x99000000)
+
+    /** 更浅的半透明黑遮罩（坐标拾取：需要看清下层应用） */
+    val scrimSoft = Color(0x66000000)
+
+    /** 浮层网格线 */
+    val grid = Color(0x40FFFFFF)
+
+    /** 选框三分线（画在图片上，白色半透明） */
+    val thirds = Color(0x99FFFFFF)
+
+    /** 裁剪画布底色（图片之外的留白区域） */
+    val canvas = Color(0xFF12181B)
+
+    /** 浮层次要文字（比例条标签、未选中 chip） */
+    val onBarMuted = Color(0xCCFFFFFF)
+
+    /** 浮层 chip 未选中底色 */
+    val chipIdle = Color(0x2EFFFFFF)
+}

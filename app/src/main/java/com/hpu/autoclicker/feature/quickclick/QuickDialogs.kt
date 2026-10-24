@@ -1,17 +1,22 @@
 package com.hpu.autoclicker.feature.quickclick
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -32,11 +37,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.hpu.autoclicker.core.components.AppButton
 import com.hpu.autoclicker.core.components.AppBodyText
 import com.hpu.autoclicker.core.components.AppButtonVariant
+import com.hpu.autoclicker.core.components.AppCard
 import com.hpu.autoclicker.core.components.AppCheckboxRow
 import com.hpu.autoclicker.core.components.AppCaption
 import com.hpu.autoclicker.core.components.AppEmptyState
 import com.hpu.autoclicker.core.components.AppFieldLabel
-import com.hpu.autoclicker.core.components.AppRadioButtonRow
+import com.hpu.autoclicker.core.components.AppSegmentedControl
 import com.hpu.autoclicker.core.components.AppTextField
 import com.hpu.autoclicker.core.theme.Dimens
 import kotlin.math.roundToInt
@@ -82,6 +88,10 @@ class QuickConfigFormState {
     fun retryDelayOrDefault(): Long = retryDelayText.toLongOrNull()?.coerceAtLeast(0) ?: 300L
 }
 
+/**
+ * 新建快捷按钮弹框的正文 —— 外框（标题 / 分隔线 / 底部按钮）由
+ * [com.hpu.autoclicker.core.components.AppDialogPanel] 统一提供，这里只放表单内容。
+ */
 @Composable
 fun QuickConfigDialogContent(
     state: QuickConfigFormState,
@@ -93,41 +103,32 @@ fun QuickConfigDialogContent(
     screenWidth: Int = 0,
     screenHeight: Int = 0,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            // 与原 XML 一致的边距：左右 24dp、上下 16dp
-            .padding(horizontal = Dimens.dialogHPadding, vertical = Dimens.dialogVPadding),
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         AppFieldLabel(text = "按钮名称（可选）")
         AppTextField(
             value = state.name,
             onValueChange = { state.name = nameFilter(it) },
-            modifier = Modifier.padding(top = Dimens.space4),
+            modifier = Modifier.padding(top = Dimens.fieldGap),
             hint = "默认为“按钮N”",
             maxLength = 10,
         )
 
+        // 动作类型：分段单选，与主页「连点器 / 代点器」同款控件
         AppFieldLabel(text = "动作类型", modifier = Modifier.padding(top = Dimens.space16))
-        Column(modifier = Modifier.padding(top = Dimens.space4)) {
-            AppRadioButtonRow(
-                text = "文本匹配",
-                selected = state.type == QuickClickConfig.TYPE_TEXT,
-                onSelect = { state.type = QuickClickConfig.TYPE_TEXT },
-            )
-            AppRadioButtonRow(
-                text = "图像识别",
-                selected = state.type == QuickClickConfig.TYPE_IMAGE,
-                onSelect = { state.type = QuickClickConfig.TYPE_IMAGE },
-            )
-            AppRadioButtonRow(
-                text = "坐标点击",
-                selected = state.type == QuickClickConfig.TYPE_COORD,
-                onSelect = { state.type = QuickClickConfig.TYPE_COORD },
-            )
-        }
+        AppSegmentedControl(
+            options = listOf("文本", "图像", "坐标"),
+            selectedIndex = actionTypeIndex(state.type),
+            onSelect = { state.type = actionTypeByIndex(it) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = Dimens.fieldGap),
+        )
+        AppCaption(
+            text = actionTypeHint(state.type),
+            modifier = Modifier.padding(top = Dimens.space4),
+        )
 
+        // 类型相关配置：装进带描边的卡片，与主页「分区 + 卡片」的层次一致
         when (state.type) {
             QuickClickConfig.TYPE_IMAGE -> ImageRecognitionSection(
                 state = state,
@@ -141,15 +142,7 @@ fun QuickConfigDialogContent(
                 screenWidth = screenWidth,
                 screenHeight = screenHeight,
             )
-            else -> {
-                AppFieldLabel(text = "目标文字", modifier = Modifier.padding(top = Dimens.space16))
-                AppTextField(
-                    value = state.targetText,
-                    onValueChange = { state.targetText = it },
-                    modifier = Modifier.padding(top = Dimens.space4),
-                    hint = "输入要在屏幕上匹配的文字",
-                )
-            }
+            else -> TextMatchSection(state)
         }
 
         // 点击后自动收起悬浮窗（整行可切换，token 化复选行）
@@ -164,7 +157,47 @@ fun QuickConfigDialogContent(
     }
 }
 
-/** 图像识别配置区：模板图选择/缩略图 + 可展开的高级参数 */
+/** 动作类型 → 分段控件下标 */
+private fun actionTypeIndex(type: String): Int = when (type) {
+    QuickClickConfig.TYPE_IMAGE -> 1
+    QuickClickConfig.TYPE_COORD -> 2
+    else -> 0
+}
+
+/** 分段控件下标 → 动作类型 */
+private fun actionTypeByIndex(index: Int): String = when (index) {
+    1 -> QuickClickConfig.TYPE_IMAGE
+    2 -> QuickClickConfig.TYPE_COORD
+    else -> QuickClickConfig.TYPE_TEXT
+}
+
+/** 当前动作类型的一句话说明 */
+private fun actionTypeHint(type: String): String = when (type) {
+    QuickClickConfig.TYPE_IMAGE -> "图像识别：截取或选择模板图，匹配到后点击"
+    QuickClickConfig.TYPE_COORD -> "坐标点击：按屏幕像素坐标直接点击"
+    else -> "文本匹配：在屏幕上查找目标文字并点击"
+}
+
+/** 文本匹配配置区：目标文字 */
+@Composable
+private fun TextMatchSection(state: QuickConfigFormState) {
+    AppCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = Dimens.blockGap),
+        border = BorderStroke(Dimens.strokeThin, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        AppFieldLabel(text = "目标文字")
+        AppTextField(
+            value = state.targetText,
+            onValueChange = { state.targetText = it },
+            modifier = Modifier.padding(top = Dimens.fieldGap),
+            hint = "输入要匹配的目标文字",
+        )
+    }
+}
+
+/** 图像识别配置区：模板图选择/缩略图 + 可展开的高级参数（整块装进卡片） */
 @Composable
 private fun ImageRecognitionSection(
     state: QuickConfigFormState,
@@ -172,117 +205,162 @@ private fun ImageRecognitionSection(
     onPickFromGallery: () -> Unit,
     screenshotSupported: Boolean,
 ) {
-    AppFieldLabel(text = "模板图片", modifier = Modifier.padding(top = Dimens.space16))
-
-    // 缩略图（已选时显示，点击可重选）
-    if (state.imageFileName.isNotEmpty()) {
-        val ctx = LocalContext.current
-        val bmp = remember(state.imageFileName) { ImageStore.loadImage(ctx, state.imageFileName) }
-        if (bmp != null) {
-            Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = "模板缩略图",
-                modifier = Modifier
-                    .padding(top = Dimens.space8)
-                    .size(Dimens.iconLg * 3)
-                    .clip(MaterialTheme.shapes.small)
-                    .clickable { onPickFromGallery() },
-            )
-        }
-    }
-
-    Row(
+    val scheme = MaterialTheme.colorScheme
+    AppCard(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = Dimens.space8),
-        horizontalArrangement = Arrangement.spacedBy(Dimens.space8),
+            .padding(top = Dimens.blockGap),
+        border = BorderStroke(Dimens.strokeThin, scheme.outlineVariant),
     ) {
-        AppButton(
-            text = "屏幕截图",
-            onClick = onCaptureScreenshot,
-            modifier = Modifier.weight(1f),
-            variant = AppButtonVariant.Outlined,
-            enabled = screenshotSupported,
-        )
-        AppButton(
-            text = "从相册选",
+        AppFieldLabel(text = "模板图片")
+        TemplateThumbnail(
+            fileName = state.imageFileName,
             onClick = onPickFromGallery,
-            modifier = Modifier.weight(1f),
-            variant = AppButtonVariant.Outlined,
+            modifier = Modifier.padding(top = Dimens.fieldGap),
         )
-    }
-    if (!screenshotSupported) {
-        AppCaption(
-            text = "屏幕截图需 Android 11 及以上；低版本请用相册选图",
-            color = MaterialTheme.colorScheme.error,
-            modifier = Modifier.padding(top = Dimens.space4),
-        )
-    }
 
-    // 高级设置开关行
-    AppCheckboxRow(
-        text = "高级匹配参数",
-        checked = state.showAdvanced,
-        onCheckedChange = { state.showAdvanced = it },
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = Dimens.space8),
-    )
-    if (state.showAdvanced) {
-        AppFieldLabel(text = "相似度阈值（0~1，默认 0.85）", modifier = Modifier.padding(top = Dimens.space8))
-        AppTextField(
-            value = state.thresholdText,
-            onValueChange = { state.thresholdText = it },
-            modifier = Modifier.padding(top = Dimens.space4),
-            hint = "0.85",
-            keyboardType = KeyboardType.Number,
-        )
-        AppFieldLabel(text = "降采样倍率（1~4，默认 2，越大越快越粗）", modifier = Modifier.padding(top = Dimens.space8))
-        AppTextField(
-            value = state.scaleText,
-            onValueChange = { state.scaleText = it },
-            modifier = Modifier.padding(top = Dimens.space4),
-            hint = "2",
-            keyboardType = KeyboardType.Number,
-        )
-        AppFieldLabel(text = "未找到重试次数 / 间隔(ms)", modifier = Modifier.padding(top = Dimens.space8))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = Dimens.space4),
+                .padding(top = Dimens.space12),
             horizontalArrangement = Arrangement.spacedBy(Dimens.space8),
         ) {
-            AppTextField(
-                value = state.retryText,
-                onValueChange = { state.retryText = it },
+            AppButton(
+                text = "屏幕截图",
+                onClick = onCaptureScreenshot,
                 modifier = Modifier.weight(1f),
-                hint = "1",
-                keyboardType = KeyboardType.Number,
+                variant = AppButtonVariant.Outlined,
+                enabled = screenshotSupported,
             )
-            AppTextField(
-                value = state.retryDelayText,
-                onValueChange = { state.retryDelayText = it },
+            AppButton(
+                text = "从相册选",
+                onClick = onPickFromGallery,
                 modifier = Modifier.weight(1f),
-                hint = "300",
-                keyboardType = KeyboardType.Number,
+                variant = AppButtonVariant.Outlined,
             )
         }
-        AppCheckboxRow(
-            text = "全屏搜索（关闭则仅在上次框选区域附近搜索）",
-            checked = state.regionFull,
-            onCheckedChange = { state.regionFull = it },
-            modifier = Modifier.fillMaxWidth().padding(top = Dimens.space8),
+        if (!screenshotSupported) {
+            AppCaption(
+                text = "屏幕截图需 Android 11 及以上；低版本请用相册选图",
+                color = scheme.error,
+                modifier = Modifier.padding(top = Dimens.fieldGap),
+            )
+        }
+
+        // 高级参数与模板图区用分隔线切开，展开时仍保持卡片内的分组感
+        HorizontalDivider(
+            thickness = Dimens.divider,
+            color = scheme.outlineVariant,
+            modifier = Modifier.padding(top = Dimens.space12),
         )
         AppCheckboxRow(
-            text = "灰度匹配（抗色偏，推荐开启）",
-            checked = state.grayMode,
-            onCheckedChange = { state.grayMode = it },
-            modifier = Modifier.fillMaxWidth().padding(top = Dimens.space4),
+            text = "高级匹配参数",
+            checked = state.showAdvanced,
+            onCheckedChange = { state.showAdvanced = it },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (state.showAdvanced) {
+            AppFieldLabel(text = "相似度阈值（0~1，默认 0.85）", modifier = Modifier.padding(top = Dimens.space8))
+            AppTextField(
+                value = state.thresholdText,
+                onValueChange = { state.thresholdText = it },
+                modifier = Modifier.padding(top = Dimens.fieldGap),
+                hint = "0.85",
+                keyboardType = KeyboardType.Number,
+            )
+            AppFieldLabel(text = "降采样倍率（1~4，默认 2，越大越快越粗）", modifier = Modifier.padding(top = Dimens.space8))
+            AppTextField(
+                value = state.scaleText,
+                onValueChange = { state.scaleText = it },
+                modifier = Modifier.padding(top = Dimens.fieldGap),
+                hint = "2",
+                keyboardType = KeyboardType.Number,
+            )
+            AppFieldLabel(text = "未找到重试次数 / 间隔(ms)", modifier = Modifier.padding(top = Dimens.space8))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = Dimens.fieldGap),
+                horizontalArrangement = Arrangement.spacedBy(Dimens.space8),
+            ) {
+                AppTextField(
+                    value = state.retryText,
+                    onValueChange = { state.retryText = it },
+                    modifier = Modifier.weight(1f),
+                    hint = "1",
+                    keyboardType = KeyboardType.Number,
+                )
+                AppTextField(
+                    value = state.retryDelayText,
+                    onValueChange = { state.retryDelayText = it },
+                    modifier = Modifier.weight(1f),
+                    hint = "300",
+                    keyboardType = KeyboardType.Number,
+                )
+            }
+            AppCheckboxRow(
+                text = "全屏搜索（关闭则仅在上次框选区域附近搜索）",
+                checked = state.regionFull,
+                onCheckedChange = { state.regionFull = it },
+                modifier = Modifier.fillMaxWidth().padding(top = Dimens.space8),
+            )
+            AppCheckboxRow(
+                text = "灰度匹配（抗色偏，推荐开启）",
+                checked = state.grayMode,
+                onCheckedChange = { state.grayMode = it },
+                modifier = Modifier.fillMaxWidth().padding(top = Dimens.space4),
+            )
+        }
+    }
+}
+
+/**
+ * 模板缩略图 —— 已选图时显示图片（点击可重选），未选图时显示占位框，
+ * 两种状态都有描边，避免弹框里出现一块无来由的空白。
+ */
+@Composable
+private fun TemplateThumbnail(
+    fileName: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val shape = MaterialTheme.shapes.small
+    val ctx = LocalContext.current
+    val bitmap = remember(fileName) {
+        if (fileName.isEmpty()) null else ImageStore.loadImage(ctx, fileName)
+    }
+    Column(modifier = modifier) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "模板缩略图",
+                modifier = Modifier
+                    .size(Dimens.iconLg * 3)
+                    .clip(shape)
+                    .border(Dimens.strokeThin, scheme.outlineVariant, shape)
+                    .clickable { onClick() },
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(Dimens.iconLg * 3)
+                    .clip(shape)
+                    .background(scheme.surfaceContainer)
+                    .border(Dimens.strokeThin, scheme.outlineVariant, shape),
+                contentAlignment = Alignment.Center,
+            ) {
+                AppCaption(text = "未选择模板图", color = scheme.outline)
+            }
+        }
+        AppCaption(
+            text = if (bitmap != null) "点击缩略图可重新选择" else "可从下方截图或相册选择",
+            modifier = Modifier.padding(top = Dimens.space4),
         )
     }
 }
 
-/** 坐标点击配置区：X/Y 手动输入 + 「屏幕取点」 */
+/** 坐标点击配置区：X/Y 手动输入 + 「屏幕取点」（整块装进卡片） */
 @Composable
 private fun CoordinateSection(
     state: QuickConfigFormState,
@@ -290,44 +368,56 @@ private fun CoordinateSection(
     screenWidth: Int,
     screenHeight: Int,
 ) {
-    val rangeHint = if (screenWidth > 0 && screenHeight > 0) "，屏幕 ${screenWidth}×${screenHeight}" else ""
-    AppFieldLabel(
-        text = "点击坐标（屏幕像素$rangeHint）",
-        modifier = Modifier.padding(top = Dimens.space16),
-    )
-    Row(
+    val scheme = MaterialTheme.colorScheme
+    val rangeHint = if (screenWidth > 0 && screenHeight > 0) "（屏幕 ${screenWidth}×${screenHeight}）" else ""
+    AppCard(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = Dimens.space4),
-        horizontalArrangement = Arrangement.spacedBy(Dimens.space8),
+            .padding(top = Dimens.blockGap),
+        border = BorderStroke(Dimens.strokeThin, scheme.outlineVariant),
     ) {
-        AppTextField(
-            value = state.coordXText,
-            onValueChange = { state.coordXText = it.filter(Char::isDigit) },
-            modifier = Modifier.weight(1f),
-            hint = "X",
-            keyboardType = KeyboardType.Number,
+        AppFieldLabel(text = "点击坐标 $rangeHint")
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = Dimens.fieldGap),
+            horizontalArrangement = Arrangement.spacedBy(Dimens.space8),
+        ) {
+            AppTextField(
+                value = state.coordXText,
+                onValueChange = { state.coordXText = it.filter(Char::isDigit) },
+                modifier = Modifier.weight(1f),
+                hint = "X",
+                keyboardType = KeyboardType.Number,
+            )
+            AppTextField(
+                value = state.coordYText,
+                onValueChange = { state.coordYText = it.filter(Char::isDigit) },
+                modifier = Modifier.weight(1f),
+                hint = "Y",
+                keyboardType = KeyboardType.Number,
+            )
+        }
+        AppButton(
+            text = "屏幕取点",
+            onClick = onPickCoordinate,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = Dimens.space12),
         )
-        AppTextField(
-            value = state.coordYText,
-            onValueChange = { state.coordYText = it.filter(Char::isDigit) },
-            modifier = Modifier.weight(1f),
-            hint = "Y",
-            keyboardType = KeyboardType.Number,
+        AppCaption(
+            text = "屏幕会置灰并覆盖网格，点选任意位置即可回填坐标，按返回键退出",
+            modifier = Modifier.padding(top = Dimens.fieldGap),
         )
     }
-    AppButton(
-        text = "屏幕取点",
-        onClick = onPickCoordinate,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = Dimens.space8),
-        variant = AppButtonVariant.Outlined,
-    )
-    AppCaption(
-        text = "点「屏幕取点」后屏幕会置灰并覆盖网格，点选任意位置即可回填坐标，不会触发下层应用点击；按系统返回键可退出并回到弹框",
-        modifier = Modifier.padding(top = Dimens.space4),
-    )
+}
+
+// ==================== 单行输入（保存脚本 / 重命名脚本） ====================
+
+/** 单行输入弹框状态 */
+@Stable
+class InputDialogState {
+    var value by mutableStateOf("")
 }
 
 // ==================== 悬浮窗透明度 ====================
@@ -338,17 +428,14 @@ class OpacityDialogState {
     var alpha by mutableStateOf(1f)
 }
 
+/** 透明度弹框正文（外框由 AppDialogPanel 提供） */
 @Composable
 fun OpacityDialogContent(
     state: OpacityDialogState,
     onAlphaChange: (Float) -> Unit,
 ) {
     val percent = (state.alpha * 100).roundToInt()
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Dimens.dialogHPadding, vertical = Dimens.space12),
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         AppCaption(text = "拖动滑块即可实时预览悬浮窗透明度，点「确定」保存")
         Slider(
             value = state.alpha,
@@ -379,6 +466,7 @@ class ScriptManagerState {
     var scripts by mutableStateOf<List<QuickScript>>(emptyList())
 }
 
+/** 脚本管理弹框正文（外框由 AppDialogPanel 提供） */
 @Composable
 fun ScriptManagerDialogContent(
     state: ScriptManagerState,
@@ -388,12 +476,7 @@ fun ScriptManagerDialogContent(
     onDeleteScript: (QuickScript) -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(scheme.surface)
-            .padding(horizontal = Dimens.dialogHPadding, vertical = Dimens.dialogVPadding),
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         // 保存当前按钮
         AppButton(
             text = "保存当前按钮",
@@ -410,15 +493,22 @@ fun ScriptManagerDialogContent(
             )
         }
 
-        // 脚本列表（原 ScrollView 固定 200dp 高，可滚动；每行：名称 / 改名 / 删除）
+        // 脚本列表（超高时列表自身滚动，行与行之间用分隔线断开）
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(Dimens.space24 * 8)   // 192dp ≈ 原 200dp 列表高度，落在 8 的倍数阶梯上
+                .heightIn(max = Dimens.space24 * 10)
                 .padding(top = Dimens.space8)
                 .verticalScroll(rememberScrollState()),
         ) {
-            state.scripts.forEach { script ->
+            state.scripts.forEachIndexed { index, script ->
+                if (index > 0) {
+                    HorizontalDivider(
+                        thickness = Dimens.divider,
+                        color = scheme.outlineVariant,
+                        modifier = Modifier.padding(vertical = Dimens.space4),
+                    )
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

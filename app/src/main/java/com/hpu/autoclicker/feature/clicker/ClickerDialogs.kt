@@ -1,17 +1,9 @@
 package com.hpu.autoclicker.feature.clicker
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -23,7 +15,6 @@ import com.hpu.autoclicker.core.components.AppButton
 import com.hpu.autoclicker.core.components.AppButtonVariant
 import com.hpu.autoclicker.core.components.AppFieldLabel
 import com.hpu.autoclicker.core.components.AppRadioButtonRow
-import com.hpu.autoclicker.core.components.AppSectionTitle
 import com.hpu.autoclicker.core.components.AppTextField
 import com.hpu.autoclicker.core.theme.Dimens
 
@@ -31,9 +22,10 @@ import com.hpu.autoclicker.core.theme.Dimens
  * 连点器（旧功能）的两个服务内弹框（原 dialog_settings.xml / activity_point_settings.xml）。
  * 经 AlertDialog.setView(ComposeView) 挂载，业务侧仍沿用原有 overlay / 确认逻辑。
  *
- * UI 美化（阶段三）：布局/控件全部走通用组件 + token；**行为红线不动**——
+ * UI 美化：布局/控件全部走通用组件 + token；**行为红线不动**——
  * 内部输入框用 AppTextField（保留原生 EditText 内核，保证 overlay 内软键盘可弹），
- * 弹框容器圆角走 [MaterialTheme.shapes.large]（dialog 级 20dp），间距全走 [Dimens]。
+ * 弹框外框统一走 [com.hpu.autoclicker.core.components.AppDialogPanel]（圆角 20dp），
+ * 间距全走 [Dimens]。本文件只提供弹框正文，标题与底部按钮由外框统一渲染。
  */
 
 // ==================== 悬浮窗设置（dialog_settings.xml） ====================
@@ -44,29 +36,19 @@ class SettingsDialogState {
     var loopCount by mutableStateOf("")
 }
 
+/** 悬浮窗设置弹框正文（标题与底部按钮由 AppDialogPanel 统一渲染） */
 @Composable
 fun SettingsDialogContent(
     state: SettingsDialogState,
     onSavePoints: () -> Unit,
     onLoadPoints: () -> Unit,
-    onCancel: () -> Unit,
-    onConfirm: () -> Unit,
 ) {
-    // 原 XML 根布局自带 dialog_background；此处等价：surface 底 + dialog 圆角
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface, MaterialTheme.shapes.large)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Dimens.dialogHPadding, vertical = Dimens.dialogVPadding),
-    ) {
-        AppSectionTitle(text = "悬浮窗设置")
-
-        AppFieldLabel(text = "总循环次数", modifier = Modifier.padding(top = Dimens.space24))
+    Column(modifier = Modifier.fillMaxWidth()) {
+        AppFieldLabel(text = "总循环次数")
         AppTextField(
             value = state.loopCount,
             onValueChange = { state.loopCount = it },
-            modifier = Modifier.padding(top = Dimens.space8),
+            modifier = Modifier.padding(top = Dimens.fieldGap),
             hint = "0 表示无限循环",
             keyboardType = KeyboardType.Number,
         )
@@ -87,22 +69,6 @@ fun SettingsDialogContent(
                 .padding(top = Dimens.space12),
             variant = AppButtonVariant.Outlined,
         )
-
-        Row(modifier = Modifier.padding(top = Dimens.space24)) {
-            AppButton(
-                text = "取消",
-                onClick = onCancel,
-                modifier = Modifier.weight(1f),
-                variant = AppButtonVariant.Outlined,
-            )
-            Box(modifier = Modifier.size(Dimens.space8))
-            AppButton(
-                text = "确定",
-                onClick = onConfirm,
-                modifier = Modifier.weight(1f),
-                variant = AppButtonVariant.Filled,
-            )
-        }
     }
 }
 
@@ -124,32 +90,22 @@ class PointSettingsFormState {
     var isSwipePoint by mutableStateOf(false)
 }
 
+/** 点击点设置弹框正文（标题与底部按钮由 AppDialogPanel 统一渲染） */
 @Composable
 fun PointSettingsDialogContent(
     state: PointSettingsFormState,
-    onCancel: () -> Unit,
-    onConfirm: () -> Unit,
 ) {
-    // 原 XML 根布局自带 dialog_background；外层 wrapper 负责百分比留白与点外关闭
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surface, MaterialTheme.shapes.large)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Dimens.dialogHPadding, vertical = Dimens.dialogVPadding),
-    ) {
-        AppSectionTitle(text = "点击点设置")
-
-        AppFieldLabel(text = "点击名称", modifier = Modifier.padding(top = Dimens.space24))
+    Column(modifier = Modifier.fillMaxWidth()) {
+        AppFieldLabel(text = "点击名称")
         AppTextField(
             value = state.name,
             onValueChange = {},
-            modifier = Modifier.padding(top = Dimens.space8),
+            modifier = Modifier.padding(top = Dimens.fieldGap),
             hint = "按钮名称",
             readOnly = true,
         )
 
-        AppFieldLabel(text = "点击类型", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "点击类型", modifier = Modifier.padding(top = Dimens.space16))
         Column(modifier = Modifier.padding(top = Dimens.space4)) {
             if (state.isSwipePoint) {
                 // 滑动点：仅显示「滑动」（选中且不可改）
@@ -167,17 +123,17 @@ fun PointSettingsDialogContent(
             }
         }
 
-        AppFieldLabel(text = "点击位置", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "点击位置", modifier = Modifier.padding(top = Dimens.space16))
         Row(modifier = Modifier.padding(top = Dimens.space4)) {
             AppRadioButtonRow("中间", state.clickPosition == "中间", Modifier.weight(1f)) { state.clickPosition = "中间" }
             AppRadioButtonRow("随机", state.clickPosition == "随机", Modifier.weight(1f)) { state.clickPosition = "随机" }
         }
 
-        AppFieldLabel(text = "延迟（毫秒）", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "延迟（毫秒）", modifier = Modifier.padding(top = Dimens.space16))
         AppTextField(
             value = state.delay,
             onValueChange = { state.delay = it },
-            modifier = Modifier.padding(top = Dimens.space8),
+            modifier = Modifier.padding(top = Dimens.fieldGap),
             hint = "0",
             keyboardType = KeyboardType.Number,
         )
@@ -185,55 +141,32 @@ fun PointSettingsDialogContent(
         // 滑动点显示「滑动持续时间」，其余显示「触摸时长」（与原文案一致）
         AppFieldLabel(
             text = if (state.isSwipePoint) "滑动持续时间（毫秒）" else "触摸时长（毫秒）",
-            modifier = Modifier.padding(top = Dimens.space24),
+            modifier = Modifier.padding(top = Dimens.space16),
         )
         AppTextField(
             value = state.touchDuration,
             onValueChange = { state.touchDuration = it },
-            modifier = Modifier.padding(top = Dimens.space8),
+            modifier = Modifier.padding(top = Dimens.fieldGap),
             hint = "100",
             keyboardType = KeyboardType.Number,
         )
 
-        AppFieldLabel(text = "重复次数", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "重复次数", modifier = Modifier.padding(top = Dimens.space16))
         AppTextField(
             value = state.repeatCount,
             onValueChange = { state.repeatCount = it },
-            modifier = Modifier.padding(top = Dimens.space8),
+            modifier = Modifier.padding(top = Dimens.fieldGap),
             hint = "1",
             keyboardType = KeyboardType.Number,
         )
 
-        AppFieldLabel(text = "随机距离（像素）", modifier = Modifier.padding(top = Dimens.space24))
+        AppFieldLabel(text = "随机距离（像素）", modifier = Modifier.padding(top = Dimens.space16))
         AppTextField(
             value = state.randomDistance,
             onValueChange = { state.randomDistance = it },
-            modifier = Modifier.padding(top = Dimens.space8),
+            modifier = Modifier.padding(top = Dimens.fieldGap),
             hint = "0",
             keyboardType = KeyboardType.Number,
         )
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = Dimens.space24),
-            horizontalArrangement = Arrangement.spacedBy(Dimens.space8),
-        ) {
-            AppButton(
-                text = "取消",
-                onClick = onCancel,
-                modifier = Modifier.weight(1f),
-                variant = AppButtonVariant.Outlined,
-            )
-            AppButton(
-                text = "保存",
-                onClick = onConfirm,
-                modifier = Modifier.weight(1f),
-                variant = AppButtonVariant.Filled,
-            )
-        }
-
-        // 底部占位，保证滚动到底部时有呼吸空间
-        Box(modifier = Modifier.size(Dimens.space8))
     }
 }
