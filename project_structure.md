@@ -29,14 +29,14 @@ com.hpu.autoclicker
 │   │   ├── AppBadge.kt                # 状态徽标：Primary/Success/Warning/Neutral 四色调（权限与运行状态）+ AppPillButton 同尺寸紧凑胶囊按钮
 │   │   ├── AppEmptyState.kt           # 空状态占位（脚本管理空列表）
 │   │   ├── AppScriptList.kt           # 命名脚本列表行（连点器/代点器共用）：点击加载 + 改名 + 删除 + 空状态
-│   │   ├── AppOpacityDialog.kt        # 透明度弹框内容（两个模式共用）：说明 + 悬浮窗滑块 +（连点器）点位滑块 + 百分比，并上报拖动开始/结束
+│   │   ├── AppOpacityDialog.kt        # 透明度弹框内容（两个模式共用）：说明 + 悬浮窗滑块 +（连点器）点位滑块 + 百分比，并上报拖动开始/结束及滑块屏幕矩形
 │   │   ├── AppSlider.kt               # 统一滑块：胶囊轨道（激活段 primary）+ 圆形滑钮（surface 底 + primary 描边 + 投影），交互沿用 Material3 Slider
 │   │   └── AppDialog.kt               # 统一弹框面板：AppDialogPanel(标题/分隔线/可滚动正文/按钮区) + AppDialogActions(取消+主操作) + AppConfirmMessage
 │   ├── ui/
 │   │   ├── RawTouch.kt                # RawTapDetector + rememberRawTapDetector：悬浮按钮的原始触摸点击判定
 │   │   ├── ServiceComposeHost.kt      # Service 内为 ComposeView 补齐生命周期/ViewModel/SavedState 宿主
 │   │   ├── ServiceDialogs.kt          # Service 内弹框统一宿主：平台 AlertDialog + 透明窗底 + TYPE_APPLICATION_OVERLAY + stripPlatformPanel 去双层框
-│   │   ├── OpacityDragPreview.kt      # 拖动透明度滑块时的预览：隐藏弹框窗口+遮罩，底部浮层显示 20% 不透明度的百分比进行条
+│   │   ├── OpacityDragPreview.kt      # 拖动透明度滑块时的预览：隐藏弹框窗口+遮罩，在被拖动滑块原位叠一条 20% 不透明度的百分比进行条
 │   │   ├── FloatingSquareButton.kt    # 悬浮窗方块按钮：40dp/12dp 圆角/品牌实心/4dp 投影，连点器与代点器共用
 │   │   └── OverlayViews.kt            # 原生浮层（截图框选/相册裁剪/坐标拾取）按钮与底部操作栏底色，读不到 Compose 主题故单独给一套同款视觉
 │   └── theme/                         # 设计 token（阶段一建立，页面唯一取值来源）
@@ -100,7 +100,7 @@ XML 侧 `res/values/colors.xml`（含 values-night）仍服务于主题/状态�
 主页。`MainUiState` 为唯一状态源，`MainActivity` 刷新权限/服务状态后驱动重组；含模式分段开关（连点器/代点器）。布局为分区式：Hero 卡片（品牌色底 + 图标 + 模式说明）→ 权限与状态（标题行：标题 + 就绪徽标在左、行尾紧凑「刷新」胶囊按钮；下方卡片三行状态，行间分隔线，条件显示的「获取权限」按钮）→ 运行模式（分段开关）→ 底部主操作（启动/关闭，平铺占满整行）。权限齐备时「获取权限」按钮自动消失，由状态卡片说明一切。
 
 ### `feature.clicker`（连点器，旧功能）
-可拖动、边缘吸附的悬浮主按钮 + 展开操作栏，管理编号点击点与滑动对，按序循环执行点击/滑动/系统按键，支持总循环次数与随机偏移。**运行中展开栏只保留主按钮与停止按钮**（其余按钮在 Compose 内容里直接不渲染，`FloatingServiceUiState.isRunning` 为唯一开关），主按钮仍可展开/折叠。脚本管理迁到「悬浮窗设置」弹框：命名保存（名称 ≤12 字）/ 点击加载（有未保存点位先确认覆盖，加载前先 `stopRunning`）/ 改名 / 删除，列表行与代点器共用 `AppScriptList`；点位与透明度分别存于 `clicker_script_config.xml` 的 `scripts` 与 `window_alpha` / `point_alpha`（与代点器的 `window_alpha` 独立），旧的 `files/click_points.json` 只在首次读取脚本列表时迁移为「默认脚本」一次（`legacy_migrated` 标记）。“隐藏”按钮已移除，由透明度弹框替代：弹框内两根滑块分别控制悬浮窗与点击 / 滑动点位的不透明度，拖动期间弹框隐藏、底部显示 20% 不透明度的百分比进行条（`OpacityDragPreview`）。
+可拖动、边缘吸附的悬浮主按钮 + 展开操作栏，管理编号点击点与滑动对，按序循环执行点击/滑动/系统按键，支持总循环次数与随机偏移。**运行中展开栏只保留主按钮与停止按钮**（其余按钮在 Compose 内容里直接不渲染，`FloatingServiceUiState.isRunning` 为唯一开关），主按钮仍可展开/折叠。脚本管理迁到「悬浮窗设置」弹框：命名保存（名称 ≤12 字）/ 点击加载（有未保存点位先确认覆盖，加载前先 `stopRunning`）/ 改名 / 删除，列表行与代点器共用 `AppScriptList`；点位与透明度分别存于 `clicker_script_config.xml` 的 `scripts` 与 `window_alpha` / `point_alpha`（与代点器的 `window_alpha` 独立），旧的 `files/click_points.json` 只在首次读取脚本列表时迁移为「默认脚本」一次（`legacy_migrated` 标记）。“隐藏”按钮已移除，由透明度弹框替代：弹框内两根滑块分别控制悬浮窗与点击 / 滑动点位的不透明度，拖动期间弹框隐藏，进行条（`OpacityDragPreview`，20% 不透明度）显示在被拖动滑块的原位置（位置由滑块通过 `onGloballyPositioned` 上报的屏幕矩形决定）。
 
 ### `feature.quickclick`（代点器，新功能）
 折叠/展开/编辑三态悬浮按钮，**启动为仅主按钮的折叠态**，单击主按钮展开/折叠（无子按钮时单击直接进入编辑态）。为子按钮配置「目标文字」（文本匹配）、「模板图片」（图像识别）或「X/Y 坐标」（坐标点击），点击时经无障碍定位或直接按坐标模拟点击；图像识别用 `ImageMatcher` 的纯 Kotlin NCC 匹配、`RegionSelectView`/`RegionCaptureOverlay` 框选模板（支持 `RegionRatioBar` 锁定 1:1 / 4:3 / 16:9 / 自定义等裁剪比例）、`ImagePickActivity` 相册裁剪；坐标点击支持手填坐标或经 `CoordinatePickOverlay` 全屏置灰网格拾取（触摸不会穿透到下层应用）。截图/选图期间悬浮窗与配置弹框整体隐藏（弹框同时置 `FLAG_NOT_TOUCHABLE`），结束后恢复；框选页与取点页不设取消按钮，系统返回键即退出并回到配置弹框，相册裁剪页返回同样回传取消并恢复弹框。支持编辑态单击子按钮打开修改/删除弹框、长按拖动排序、脚本另存为/加载/改名/删除、名称按中英文限长；编辑态的「X」关闭悬浮窗（对比 `savedSnapshot` 判断未保存改动并提示保存，未命名列表先输入脚本名），「透明度」按钮用滑块实时调整 `root.alpha` 并持久化到 `window_alpha`。

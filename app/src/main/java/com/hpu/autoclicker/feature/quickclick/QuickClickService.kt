@@ -511,8 +511,17 @@ class QuickClickService : Service() {
                             root.alpha = it
                             preview.update(it)
                         },
-                        onDraggingChange = { dragging, value ->
-                            if (dragging) preview.show(dialogRef, value) else preview.hide()
+                        onDraggingChange = { dragging, value, anchor ->
+                            if (dragging && anchor != null) {
+                                preview.show(
+                                    dialogRef,
+                                    value,
+                                    anchor,
+                                    QuickClickStore.MIN_WINDOW_ALPHA,
+                                )
+                            } else {
+                                preview.hide()
+                            }
                         },
                     )
                 }

@@ -12,16 +12,20 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.toArgb
 import com.hpu.autoclicker.core.theme.OverlayPalette
 import kotlin.math.max
 import kotlin.math.roundToInt
 
+/** 进行条顶部为百分比数字预留的高度（dp） */
+private const val TEXT_SPACE_DP = 24f
+
 /**
  * 拖动透明度滑块时的临时预览。
  *
- * 需求：按住滑块拖动的过程中，弹框（连同背后的遮罩）整体隐藏，只在屏幕底部留一条
- * 20% 不透明度的滑动进行条，方便直接看清悬浮窗 / 点位的真实透明度。
+ * 需求：按住滑块拖动的过程中，弹框（连同背后的遮罩）整体隐藏，只把「20% 不透明度的滑动进行条」
+ * 画在**当前这根滑块原来的位置**上——滑钮就在手指下方，位置不发生跳变，才好继续拖。
  *
  * 为什么不用弹框自身的窗口承载预览条：
  * 弹框窗口被压到 alpha=0 后其内容全部不可见，而滑块必须保持挂载（否则手势会被取消），
@@ -33,13 +37,16 @@ class OpacityDragPreview(private val context: Context) {
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
     private var bar: BarView? = null
-    private var params: WindowManager.LayoutParams? = null
-    private var added = false
     private var dialog: AlertDialog? = null
     private var active = false
 
-    /** 拖动开始：隐藏弹框并显示进行条 */
-    fun show(dialog: AlertDialog?, value: Float) {
+    /**
+     * 拖动开始：隐藏弹框，并把进行条摆到 [anchor]（滑块在屏幕上的矩形）。
+     *
+     * @param anchor 被拖动滑块的屏幕矩形，进行条与它同宽、轨道线同高
+     * @param minValue 滑块量程下限（透明度为 0.2），用于让填充比例与真实滑块一致
+     */
+    fun show(dialog: AlertDialog?, value: Float, anchor: Rect, minValue: Float) {
         this.dialog = dialog
         if (!active) {
             active = true
@@ -52,17 +59,20 @@ class OpacityDragPreview(private val context: Context) {
             }
         }
         val view = bar ?: BarView(context).also { bar = it }
+        view.minValue = minValue
         view.value = value
-        val lp = params ?: createParams().also { params = it }
         try {
-            if (added) windowManager.updateViewLayout(view, lp) else windowManager.addView(view, lp)
-            added = true
+            if (view.isAttachedToWindow) {
+                windowManager.updateViewLayout(view, createParams(anchor))
+            } else {
+                windowManager.addView(view, createParams(anchor))
+            }
         } catch (e: Exception) {
             Log.e("OpacityPreview", "显示透明度预览条失败", e)
         }
     }
 
-    /** 拖动过程中刷新进行条位置（弹框处于隐藏态才生效） */
+    /** 拖动过程中刷新进行条数值（弹框处于隐藏态才生效） */
     fun update(value: Float) {
         if (active) bar?.value = value
     }
@@ -82,21 +92,23 @@ class OpacityDragPreview(private val context: Context) {
             }
         }
         dialog = null
-        if (added) {
-            try {
-                windowManager.removeView(bar)
-            } catch (e: Exception) {
-                Log.e("OpacityPreview", "移除透明度预览条失败", e)
+        bar?.let { view ->
+            if (view.isAttachedToWindow) {
+                try {
+                    windowManager.removeView(view)
+                } catch (e: Exception) {
+                    Log.e("OpacityPreview", "移除透明度预览条失败", e)
+                }
             }
-            added = false
         }
     }
 
-    private fun createParams(): WindowManager.LayoutParams {
+    private fun createParams(anchor: Rect): WindowManager.LayoutParams {
         val metrics = context.resources.displayMetrics
+        val textSpace = (TEXT_SPACE_DP * metrics.density).toInt()
         return WindowManager.LayoutParams(
-            (metrics.widthPixels * 0.78f).toInt(),
-            dp(52),
+            anchor.width.roundToInt(),
+            anchor.height.roundToInt() + textSpace,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else
@@ -105,22 +117,33 @@ class OpacityDragPreview(private val context: Context) {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            y = dp(72)
+            gravity = Gravity.TOP or Gravity.LEFT
+            x = anchor.left.roundToInt()
+            // 顶部多留一条给百分比数字，轨道线才能与滑块原位置重合
+            y = anchor.top.roundToInt() - textSpace
         }
     }
 
-    private fun dp(value: Int): Int = (value * context.resources.displayMetrics.density).toInt()
-
-    /** 一条极简的滑动进行条：百分比 + 轨道 + 已选填充 + 圆点 */
+    /**
+     * 一条极简的滑动进行条：百分比 + 轨道 + 已选填充 + 圆点。
+     * 几何尺寸与 `AppSlider` 对齐（轨道左右各缩进一个滑钮半径、滑钮直径 24dp），
+     * 换成它以后看起来就是原滑块原地变透明，而不是跳到别处。
+     */
     private class BarView(context: Context) : View(context) {
 
         var value: Float = 1f
             set(v) {
                 field = v.coerceIn(0f, 1f)
+                invalidate()
+            }
+
+        var minValue: Float = 0f
+            set(v) {
+                field = v
                 invalidate()
             }
 
@@ -137,6 +160,12 @@ class OpacityDragPreview(private val context: Context) {
             color = brandColor
             alpha = barAlpha
         }
+        private val thumbRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = brandColor
+            alpha = 110
+            style = Paint.Style.STROKE
+            strokeWidth = 2.5f * density
+        }
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = brandColor
             alpha = 150
@@ -147,23 +176,29 @@ class OpacityDragPreview(private val context: Context) {
         private val rect = RectF()
 
         override fun onDraw(canvas: Canvas) {
-            val padH = 8 * density
-            val barH = 8 * density
-            val thumbR = 7 * density
-            val centerY = height - 18 * density
+            val thumbR = 12 * density          // 与 AppSlider 的滑钮半径一致
+            val trackH = 8 * density           // 与 AppSlider 的轨道高度一致
+            val textSpace = TEXT_SPACE_DP * density
+            val centerY = textSpace + (height - textSpace) / 2f
 
-            rect.set(padH, centerY - barH / 2, width - padH, centerY + barH / 2)
-            canvas.drawRoundRect(rect, barH / 2, barH / 2, bgPaint)
+            val railLeft = thumbR
+            val railRight = width - thumbR
+            rect.set(railLeft, centerY - trackH / 2, railRight, centerY + trackH / 2)
+            canvas.drawRoundRect(rect, trackH / 2, trackH / 2, bgPaint)
 
-            val thumbX = rect.left + rect.width() * value
-            val fillRight = max(thumbX, rect.left + barH / 2)
+            val span = 1f - minValue
+            val fraction =
+                if (span <= 0f) 0f else ((value - minValue) / span).coerceIn(0f, 1f)
+            val thumbX = railLeft + (railRight - railLeft) * fraction
+            val fillRight = max(thumbX, railLeft + trackH / 2)
             canvas.drawRoundRect(
-                RectF(rect.left, rect.top, fillRight, rect.bottom),
-                barH / 2,
-                barH / 2,
+                RectF(railLeft, rect.top, fillRight, rect.bottom),
+                trackH / 2,
+                trackH / 2,
                 fillPaint,
             )
-            canvas.drawCircle(thumbX, centerY, thumbR, fillPaint)
+
+            canvas.drawCircle(thumbX, centerY, thumbR - thumbRingPaint.strokeWidth / 2, thumbRingPaint)
 
             canvas.drawText(
                 "${(value * 100).roundToInt()}%",
@@ -172,5 +207,10 @@ class OpacityDragPreview(private val context: Context) {
                 textPaint,
             )
         }
+    }
+
+    private companion object {
+        /** 进行条顶部为百分比数字预留的高度 */
+        const val TEXT_SPACE_DP = 24f
     }
 }

@@ -1481,8 +1481,17 @@ class FloatingWindowService : Service() {
                             applyPointAlpha(it)
                             preview.update(it)
                         },
-                        onDraggingChange = { dragging, value ->
-                            if (dragging) preview.show(dialogRef, value) else preview.hide()
+                        onDraggingChange = { dragging, value, anchor ->
+                            if (dragging && anchor != null) {
+                                preview.show(
+                                    dialogRef,
+                                    value,
+                                    anchor,
+                                    ClickerScriptStore.MIN_WINDOW_ALPHA,
+                                )
+                            } else {
+                                preview.hide()
+                            }
                         },
                     )
                 }
