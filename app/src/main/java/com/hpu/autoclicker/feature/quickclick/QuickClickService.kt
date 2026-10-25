@@ -657,8 +657,6 @@ class QuickClickService : Service() {
         val submitted = svc.dispatchQuickGesture(gesture) { ok ->
             if (!ok) {
                 Toast.makeText(this, "手势被系统取消，请重试", Toast.LENGTH_SHORT).show()
-            } else if (cfg.autoCollapse) {
-                collapse()   // 动作执行后自动收起悬浮窗
             }
         }
         if (!submitted) {
@@ -1107,7 +1105,7 @@ class QuickClickService : Service() {
 
     /**
      * 配置弹框。[editTarget] 为 null 时是「+」新建：填表后追加到列表末尾；
-     * 传入已有配置时是点击编辑：表单回填名称/目标文字/自动收起，确认后原地替换（保持顺序）。
+     * 传入已有配置时是点击编辑：表单回填名称/目标文字/动作参数，确认后原地替换（保持顺序）。
      */
     private fun showConfigDialog(editTarget: QuickClickConfig? = null) {
         try {
@@ -1117,7 +1115,6 @@ class QuickClickService : Service() {
                 if (editTarget != null) {
                     name = editTarget.name
                     targetText = editTarget.text
-                    autoCollapse = editTarget.autoCollapse
                     type = editTarget.type
                     coordXText = if (editTarget.type == QuickClickConfig.TYPE_COORD) {
                         editTarget.x.toInt().toString()
@@ -1252,7 +1249,6 @@ class QuickClickService : Service() {
                 QuickClickConfig(
                     name = name,
                     type = QuickClickConfig.TYPE_IMAGE,
-                    autoCollapse = form.autoCollapse,
                     imageFileName = form.imageFileName,
                     imageThreshold = form.thresholdOrDefault(),
                     imageScale = form.scaleOrDefault(),
@@ -1285,7 +1281,6 @@ class QuickClickService : Service() {
                     type = QuickClickConfig.TYPE_COORD,
                     x = x.toFloat(),
                     y = y.toFloat(),
-                    autoCollapse = form.autoCollapse,
                 )
             }
             else -> {
@@ -1298,7 +1293,6 @@ class QuickClickService : Service() {
                     name = name,
                     type = QuickClickConfig.TYPE_TEXT,
                     text = text,
-                    autoCollapse = form.autoCollapse,
                 )
             }
         }.copy(

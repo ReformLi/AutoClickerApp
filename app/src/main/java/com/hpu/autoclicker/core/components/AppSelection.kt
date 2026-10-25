@@ -54,7 +54,7 @@ fun AppRadioButtonRow(
 }
 
 /**
- * 复选行 —— 左侧 Checkbox + 文字，整行可切换。用于「点击后自动收起」这类布尔选项。
+ * 复选行 —— 左侧 Checkbox + 文字，整行可切换。用于「随机坐标偏移」这类布尔选项。
  */
 @Composable
 fun AppCheckboxRow(

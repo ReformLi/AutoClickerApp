@@ -53,7 +53,6 @@ import com.hpu.autoclicker.core.theme.Dimens
 class QuickConfigFormState {
     var name by mutableStateOf("")
     var targetText by mutableStateOf("")
-    var autoCollapse by mutableStateOf(false)
 
     // ===== 坐标点击相关 =====
     /** 当前识别方式：TYPE_TEXT / TYPE_IMAGE / TYPE_COORD */
@@ -187,16 +186,6 @@ fun QuickConfigDialogContent(
         ActionSection(
             state = state,
             maxSwipeDistance = QuickClickConfig.maxSwipeDistance(screenWidth, screenHeight),
-        )
-
-        // 动作执行后自动收起悬浮窗（整行可切换，token 化复选行）
-        AppCheckboxRow(
-            text = "点击后自动收起悬浮窗",
-            checked = state.autoCollapse,
-            onCheckedChange = { state.autoCollapse = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = Dimens.space16),
         )
     }
 }

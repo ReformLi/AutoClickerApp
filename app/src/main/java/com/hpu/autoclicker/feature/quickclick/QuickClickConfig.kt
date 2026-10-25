@@ -19,7 +19,6 @@ data class QuickClickConfig(
     val text: String = "",               // 文本匹配：目标文字
     val x: Float = 0f,                   // 坐标定位：x（屏幕像素）
     val y: Float = 0f,                   // 坐标定位：y（屏幕像素）
-    val autoCollapse: Boolean = false,   // 动作执行后是否自动收起悬浮窗
     // ===== 图像识别扩展字段（仅 TYPE_IMAGE 有意义）=====
     val imageFileName: String = "",      // 模板图文件名（相对 filesDir/images/）
     val imageThreshold: Float = 0.80f,   // 相似度阈值 [0,1]
@@ -45,7 +44,6 @@ data class QuickClickConfig(
         put("text", text)
         put("x", x.toDouble())
         put("y", y.toDouble())
-        put("autoCollapse", autoCollapse)
         if (type == TYPE_IMAGE) {
             put("imageFileName", imageFileName)
             put("imageThreshold", imageThreshold.toDouble())
@@ -120,7 +118,6 @@ data class QuickClickConfig(
                 text = o.optString("text", ""),
                 x = o.optDouble("x", 0.0).toFloat(),
                 y = o.optDouble("y", 0.0).toFloat(),
-                autoCollapse = o.optBoolean("autoCollapse", false),
                 imageFileName = o.optString("imageFileName", ""),
                 imageThreshold = o.optDouble("imageThreshold", 0.80).toFloat(),
                 imageScale = o.optInt("imageScale", 2),
@@ -231,9 +228,9 @@ object QuickClickStore {
                 val configs = mutableListOf<QuickClickConfig>()
                 for (j in 0 until cfgArr.length()) {
                     val cfgObj = cfgArr.getJSONObject(j)
-                    // 旧版本没有动作字段：读取时补默认值（点击 / 随机偏移开 / 5px），
-                    // 首次读取后回写一次完成迁移，后续再读不会重复写
-                    if (!cfgObj.has("actionType")) needsMigration = true
+                    // 旧版本没有动作字段：读取时补默认值（点击 / 随机偏移开 / 5px）；
+                    // 旧版本遗留的 autoCollapse 字段也借这次回写一并清掉，后续再读不会重复写
+                    if (!cfgObj.has("actionType") || cfgObj.has("autoCollapse")) needsMigration = true
                     configs.add(QuickClickConfig.fromJson(cfgObj))
                 }
                 list.add(QuickScript(o.optString("name", "脚本"), configs))
