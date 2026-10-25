@@ -202,6 +202,12 @@
 - 状态用「圆点 + 徽标」表达，避免大块高饱和色块抢占注意力；正常态用中性徽标，成功态用成功色徽标
 - 所有颜色 / 字号 / 圆角 / 间距均取自 `core/theme` 的设计 token，页面禁止硬编码
 
+**全面屏适配**：
+
+- `MainActivity` 调用 `enableEdgeToEdge()`，窗口铺满到状态栏 / 导航栏 / 刘海区域；页面底色继续铺满整屏，状态栏区域显示页面底色，与页面无缝
+- 页面内容按 `WindowInsets.safeDrawing`（状态栏 + 导航栏 + 刘海）加内边距避让，内边距加在滚动容器之外：内容既不会被状态栏遮盖，也不会滚进系统栏区域
+- 系统栏图标颜色随系统深浅色自动切换（浅色用深色图标、深色用浅色图标）
+
 **广播监听**：
 
 - 当悬浮窗服务被关闭时，收到 `SERVICE_STOPPED` 广播，自动更新界面按钮状态
@@ -314,6 +320,7 @@
 | `AppOpacityDialog` | 透明度弹框内容（两个模式共用）：说明文案 + 一或两根滑块 + 百分比；连点器额外传入 `onPointAlphaChange` 显示「点击 / 滑动点位」滑块。拖动状态与滑块自身的屏幕矩形经 `onDraggingChange` 一并上报，由宿主隐藏弹框并把预览条放回这根滑块原来的位置 |
 | `AppSlider` | 统一滑块：胶囊轨道（未激活段 `surfaceContainerHigh` 底 + `outlineVariant` 细描边，激活段 `primary`）+ 圆形滑钮（`surface` 底 + `primary` 描边 + 投影，拖动时底色转 `primaryContainer`、投影加深）；激活段右端与滑钮圆心严格对齐，交互沿用 Material3 Slider（点按跳转、拖动改值、无障碍语义），`interactionSource` 透传供调用方监听拖动 |
 | `OpacityDragPreview` | 拖动透明度滑块时的预览条（core/ui，原生 View 浮层）：弹框窗口降到 alpha=0 并去掉遮罩，按滑块上报的屏幕矩形在**原位置**画一条 20% 不透明度的百分比进度条（轨道线、滑钮与 `AppSlider` 几何一致，填充比例同样按 20%~100% 映射），松手后恢复 |
+| `SystemBarInsets` | 全面屏适配工具（core/ui）：`liftBottomBarAboveNavigationBar()` 把铺满整屏的页面 / 浮层的底部操作栏抬到导航栏之上，判据是操作栏底边是否触到屏幕底边；导航栏高度优先取窗口真实 `systemBars` inset，旧版本回退到系统资源 |
 | `PointMarkerView` | 连点器点位标记（feature/clicker，原生 View）：44dp 圆角方块（14dp 圆角）+ 品牌青实心渐变 + 1.5dp 白色描边 + 柔和投影 + 顶部柔光；点击点为实心态且数字外套一圈细白环（靶心），滑动起点为实心态、滑动终点为浅底描边态（浅青底 + 品牌色描边 + 深色字）；执行该点的瞬间切到强调色（浅青底 + 深色字 + 强调色投影），执行完复原 |
 | `PipeLineView` | 连点器滑动通道（feature/clicker，原生 View）：品牌青半透明轨带（12dp）+ 品牌青实线中线（2dp）+ 末端白色 V 形箭头（深色垫底描边，浅色背景下也清晰）；两端按标记半径留白，线条不压在标记上；滑动执行期间轨带与中线切到强调色 |
 | `AppDialog` | **全项目弹框的唯一外框**：`AppDialogPanel`（标题区 → 1dp 分隔线 → 可滚动正文 → 1dp 分隔线 → 按钮区，圆角 20dp + `surface` 底，整体不超屏高 72%）、`AppDialogActions`（取消在左 / 主操作在右，可插 `leading` 弱化或危险操作）、`AppConfirmMessage`（确认框正文） |
@@ -328,6 +335,7 @@
 
 - 连点器与代点器的悬浮窗按钮共用 `FloatingSquareButton`：40dp 见方、12dp 圆角、品牌实心底、白色图标、4dp 轻投影，按下加深、禁用半透明
 - 截图框选页、相册裁剪页、坐标拾取浮层是原生 View，读不到 Compose 主题，故用 `OverlayViews` 提供同款按钮（12dp 圆角、品牌实心或半透明描边）与底部操作栏底色（半透明黑 + 1dp 分隔线），色值统一取 `OverlayPalette`
+- 全面屏适配：铺满整屏的原生浮层与页面（截图框选页、相册裁剪页）底部操作栏统一按导航栏高度上移，判据是「操作栏底边是否触到屏幕底边」——触到才抬，窗口本身已避让导航栏时不重复留白（`core/ui/SystemBarInsets.kt`）
 
 **XML 侧同步规则**：`res/values/colors.xml` 与 `res/values-night/colors.xml` 与 `Color.kt` 同源，**改色必须两处同步**且浅 / 深两份键对称；主题状态栏与页面背景同色（浅色用深色图标、深色用浅色图标）。
 

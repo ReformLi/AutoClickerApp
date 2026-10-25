@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,6 +47,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 全面屏适配：窗口铺满到系统栏之下（状态栏/导航栏/刘海区域），
+        // 由 Compose 侧按 safeDrawing 内边距避让，避免全面屏设备上状态栏遮盖页面内容。
+        enableEdgeToEdge()
         // 由 setContentView(R.layout.activity_main) 迁移为 Compose setContent
         setContent {
             AutoClickerTheme {

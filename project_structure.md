@@ -38,6 +38,7 @@ com.hpu.autoclicker
 │   │   ├── ServiceDialogs.kt          # Service 内弹框统一宿主：平台 AlertDialog + 透明窗底 + TYPE_APPLICATION_OVERLAY + stripPlatformPanel 去双层框
 │   │   ├── OpacityDragPreview.kt      # 拖动透明度滑块时的预览：隐藏弹框窗口+遮罩，在被拖动滑块原位叠一条 20% 不透明度的百分比进行条
 │   │   ├── FloatingSquareButton.kt    # 悬浮窗方块按钮：40dp/12dp 圆角/品牌实心/4dp 投影，连点器与代点器共用
+│   │   ├── SystemBarInsets.kt         # 全面屏适配：liftBottomBarAboveNavigationBar 把铺满整屏的页面/浮层底部操作栏抬到导航栏之上
 │   │   └── OverlayViews.kt            # 原生浮层（截图框选/相册裁剪/坐标拾取）按钮与底部操作栏底色，读不到 Compose 主题故单独给一套同款视觉
 │   └── theme/                         # 设计 token（阶段一建立，页面唯一取值来源）
 │       ├── Color.kt                   # 方案 A「钢青 Teal-Steel」浅/深全量 tone（同 hue 低饱和中性色）+ AppSemanticColors(success/warning/primaryPressed) + OverlayPalette(原生浮层专用色板)
@@ -48,7 +49,7 @@ com.hpu.autoclicker
 │
 └── feature/                           # 按功能特性划分的业务模块
     ├── main/
-    │   └── MainScreen.kt              # MainUiState + MainScreen：主页 Compose 界面
+    │   └── MainScreen.kt              # MainUiState + MainScreen：主页 Compose 界面（内容按 safeDrawing 避让状态栏/导航栏/刘海）
     │
     ├── clicker/                       # 「连点器」= 旧功能（坐标循环连点）
     │   ├── FloatingWindowService.kt   # 悬浮窗主服务 + ClickPoint 数据类 + 脚本管理/透明度/输入/确认弹框逻辑
@@ -133,6 +134,10 @@ feature.main   feature.clicker   feature.quickclick
   2. 悬浮窗按钮手势统一在 `RawTouch` 单一链路（`pointerInteropFilter`），禁止混用 `clickable`；两个悬浮窗的按钮一律用 `FloatingSquareButton`，只换图标，不各写一套。脚本列表里的「点击加载 / 改名 / 删除」是弹框内 Compose 内容（非悬浮窗），可正常使用 `Modifier.clickable`。
   3. 悬浮窗内容的几何尺寸（40dp 按钮、8dp 根内边距等）与 Service 的窗口高度估算、拖动排序行高换算硬耦合，改前需同步 Service 侧数学。连点器运行态只渲染主按钮 + 停止按钮，`isTouchOnAllowedButton` 只放行主按钮与停止按钮记录的位置（`mainBtnWindowRect` / `stopBtnWindowRect`），新增按钮时必须同步这三处。
 - **弹框一致性**：全项目弹框统一套 `AppDialogPanel` 外框，标题/分隔线/可滚动正文/按钮区由组件统一排版；按钮行统一用 `AppDialogActions`（取消在左、主操作在右）；危险操作主按钮用 `AppButtonVariant.Danger`。新增弹框不得自绘外框或使用平台默认面板。
+- **全面屏（edge-to-edge）适配**：`targetSdk 36` 下系统已强制窗口铺满到状态栏/导航栏/刘海区域，**页面必须自行消费系统栏 inset**，否则状态栏会压住内容。规则：
+  1. Activity 侧在 `onCreate` 调 `enableEdgeToEdge()`（内部会 `WindowCompat.setDecorFitsSystemWindows(window, false)`），Compose 页面按 `WindowInsets.safeDrawing` 加内边距避让，内边距加在滚动容器**之外**（内容不会滚进系统栏区域）。
+  2. 铺满整屏的原生浮层与透明 Activity（截图框选页 / 相册裁剪页）没有 Compose inset，底部操作栏统一走 `core/ui/SystemBarInsets.kt` 的 `liftBottomBarAboveNavigationBar()`：判据是「操作栏底边是否触到屏幕底边」，触到才按导航栏高度整体上移，窗口本身已避让时不重复留白。
+  3. 新增整屏页面或浮层时不要硬编码状态栏高度，一律走上述两处入口。
 - **样式一致性**：页面禁止硬编码颜色/字号/圆角/间距，一律取 `MaterialTheme.colorScheme` / `MaterialTheme.typography` / `MaterialTheme.shapes` / `Dimens`；布局间距优先取 `Dimens` 中的**语义间距**（sectionGap / blockGap / fieldGap / screenVMargin）而非裸数值；例外仅悬浮窗内容的几何 dp（见上）。
 - **图像识别（代点器）**：依赖无障碍 `takeScreenshot`（**仅 Android 11 / API 30+**，低版本入口置灰提示），无障碍配置必须声明 `android:canTakeScreenshot="true"`，否则系统直接拒绝截图。截图前 `hideSelfForScreenshot()` + `hideConfigForCapture()` 隐藏悬浮窗与配置弹框并延迟约 150ms，两者都置 `FLAG_NOT_TOUCHABLE`（弹框另加 `FLAG_NOT_FOCUSABLE`），避免不可见窗口仍吞触摸或抢相册焦点；框选浮层关闭（确定 / 系统返回键取消）后才恢复弹框与悬浮窗。「从相册选」同样先隐藏悬浮窗与弹框再拉起 `ImagePickActivity`，取消、返回、选图完成都经 `pendingResult`（含 `onDestroy` 兜底）恢复。模板匹配在 `matchExecutor` 单线程后台执行（不能放主线程，全屏 NCC 会卡 UI），并用 `matchInProgress` 防止并发截图；模板图与匹配参数存 `QuickClickConfig`，图片文件由 `ImageStore` 管 `filesDir/images/`，删脚本/删按钮/换图/取消编辑均需清理旧文件。`ImagePickActivity` 用 `ComponentActivity`（框架 Activity 无 `registerForActivityResult`），其在 `Button.apply{}` 内引用宿主须用 `this@ImagePickActivity`；`ScreenshotResult`/`TakeScreenshotCallback` 是 `AccessibilityService` 嵌套类，不可 import。
 - **裁剪比例（代点器图像识别）**：`RegionRatioBar` 由截图浮层与相册裁剪页共用，提供 自由 / 1:1 / 4:3 / 3:4 / 16:9 / 9:16 / 自定义 W:H；`RegionSelectView.setAspectRatio(ratio)` 中的比例是**图像像素坐标的宽/高**，切换比例时保持选框面积与中心不变，锁定后 `applyScale` 只等比改变尺寸、拖动只平移。自定义比例弹框在 `Service` 上下文（截图浮层）中需显式 `TYPE_APPLICATION_OVERLAY` 并清除 `FLAG_ALT_FOCUSABLE_IM`，在 `Activity` 上下文（相册裁剪）中走普通弹框；`RegionRatioBar` 内部按 `context is Activity` 自动分流。选中比例不会写入 `QuickClickConfig`，裁剪结果 PNG 本身即为目标比例。

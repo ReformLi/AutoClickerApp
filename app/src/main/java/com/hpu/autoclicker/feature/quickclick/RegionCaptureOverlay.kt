@@ -16,6 +16,7 @@ import com.hpu.autoclicker.core.theme.Dimens
 import com.hpu.autoclicker.core.theme.OverlayPalette
 import com.hpu.autoclicker.core.ui.createOverlayBarBackground
 import com.hpu.autoclicker.core.ui.createOverlayButton
+import com.hpu.autoclicker.core.ui.liftBottomBarAboveNavigationBar
 import kotlin.math.roundToInt
 
 /**
@@ -131,6 +132,8 @@ class RegionCaptureOverlay(
             root = overlay
             selectView = sv
             overlay.requestFocus()
+            // 全面屏适配：浮层铺满整屏时，底部比例条与操作栏抬到导航栏之上
+            liftBottomBarAboveNavigationBar(bottom)
         } catch (e: Exception) {
             android.util.Log.e("RegionCapture", "addView 失败", e)
             listener.onCancel()

@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import com.hpu.autoclicker.core.theme.Dimens
 import com.hpu.autoclicker.core.ui.createOverlayBarBackground
 import com.hpu.autoclicker.core.ui.createOverlayButton
+import com.hpu.autoclicker.core.ui.liftBottomBarAboveNavigationBar
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -120,6 +121,9 @@ class ImagePickActivity : ComponentActivity() {
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.BOTTOM)
         )
         setContentView(overlay)
+
+        // 全面屏适配：窗口若铺到导航栏之下，底部比例条与操作栏整体抬到导航栏之上
+        liftBottomBarAboveNavigationBar(bottom)
     }
 
     /** 是否已经回传结果；防止返回键与 onDestroy 重复回调 */
