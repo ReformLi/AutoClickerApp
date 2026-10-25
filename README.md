@@ -26,8 +26,14 @@
 | `SYSTEM_ALERT_WINDOW`        | 显示全局悬浮窗        |
 | `BIND_ACCESSIBILITY_SERVICE` | 模拟点击、滑动、全局按键   |
 | `FOREGROUND_SERVICE`         | 保持后台运行，防止被系统杀死 |
+| `FOREGROUND_SERVICE_DATA_SYNC` | 与两个服务声明的 `foregroundServiceType="dataSync"` 匹配（Android 14+ 必需） |
+| `POST_NOTIFICATIONS`         | Android 13+ 显示前台服务通知（通知栏「停止」入口），运行时申请 |
 
 > 无障碍服务必须由用户在系统设置中手动开启。
+>
+> ⚠️ **Android 14（API 34）起**：前台服务必须声明与 `foregroundServiceType` 对应的类型权限，否则 `startForeground()` 抛 `SecurityException`，表现为「点击启动悬浮窗后 App 闪退」。若要调整服务类型，需同步修改 `AndroidManifest.xml` 中的类型与类型权限。
+>
+> ⚠️ **Android 15（API 35）起**：`dataSync` 类型前台服务有 6 小时 / 24 小时运行时长上限，超时后系统回调 `Service.onTimeout()`，App 在几秒内主动停止服务（不会闪退），悬浮窗会随之消失。
 >
 > 代点器的「图像识别」依赖无障碍 `takeScreenshot`，**仅支持 Android 11（API 30）及以上**；低版本上截图捕获入口置灰、图像匹配点击不可用，文本匹配、坐标点击与连点器不受影响。
 >
@@ -368,6 +374,8 @@
 - 悬浮窗默认吸附左侧边缘，可拖动
 - 设置对话框等采用 `TYPE_APPLICATION_OVERLAY`，确保在其他应用之上显示
 - 前台服务运行时显示通知，提供停止按钮
+- 两个悬浮窗服务用 `foregroundServiceType="dataSync"`，并在 manifest 声明 `FOREGROUND_SERVICE_DATA_SYNC` 类型权限；Android 13+ 运行时申请 `POST_NOTIFICATIONS`，被拒绝也不影响悬浮窗运行（仅通知栏入口不可见）
+- Android 15+ 的 `dataSync` 时长上限由 `Service.onTimeout(startId, fgsType)` 接管：主动 `stopSelf()` 优雅停止，避免系统以 `RemoteServiceException` 结束进程
 - 主界面、悬浮窗与弹框使用 Jetpack Compose，经 `ComposeView` 承载；Service 内用 `ServiceComposeHost` 补齐 Compose 所需的生命周期宿主，带输入框的 `TYPE_APPLICATION_OVERLAY` 弹框需清除 `FLAG_ALT_FOCUSABLE_IM` 才能弹出软键盘
 - 两个悬浮窗服务的弹框统一由 `ServiceDialogs.show()` 承载（平台 `AlertDialog` + 透明窗底 + `TYPE_APPLICATION_OVERLAY`），弹框内容统一套 `AppDialogPanel` 外框，两个悬浮窗的按钮统一用 `FloatingSquareButton`
 - 代点器的截图框选页、裁剪比例条、坐标拾取浮层使用原生 View 承载（全屏 `TYPE_APPLICATION_OVERLAY` 场景下按键与窗口焦点更可控）

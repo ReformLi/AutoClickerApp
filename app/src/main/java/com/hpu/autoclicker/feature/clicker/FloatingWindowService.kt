@@ -260,7 +260,7 @@ class FloatingWindowService : Service() {
 
     override fun onDestroy() {
         // 发送广播通知 Activity 服务已停止
-        val broadcastIntent = Intent("com.hpu.autoclicker.SERVICE_STOPPED")
+        val broadcastIntent = Intent("com.hpu.autoclicker.SERVICE_STOPPED").setPackage(packageName)
         sendBroadcast(broadcastIntent)
         stopRunning()
         isRunning = false
@@ -410,6 +410,8 @@ class FloatingWindowService : Service() {
     /**
      * 开启前台服务（Android 8.0 以上必须）
      * 需要声明权限：android.permission.FOREGROUND_SERVICE
+     * Android 14(API 34) 起还需与 foregroundServiceType 对应的
+     * android.permission.FOREGROUND_SERVICE_DATA_SYNC，否则 startForeground 抛 SecurityException
      */
     private fun startForegroundIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -434,6 +436,19 @@ class FloatingWindowService : Service() {
                 .build()
             startForeground(1, notification)
         }
+    }
+
+    /**
+     * Android 15(API 35) 起 dataSync 类型前台服务有 6 小时 / 24 小时运行时长上限，
+     * 超时后系统回调本方法，必须在几秒内停止服务，
+     * 否则系统以 RemoteServiceException 结束应用进程。
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            super.onTimeout(startId, fgsType)
+        }
+        Log.w("FloatingWindow", "dataSync 前台服务达到运行时长上限，主动停止")
+        stopSelf(startId)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

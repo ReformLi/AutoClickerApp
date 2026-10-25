@@ -5,6 +5,11 @@
     <!-- 悬浮窗权限 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14(API 34) 起前台服务必须声明与 foregroundServiceType 对应的类型权限，
+         否则 startForeground() 抛 SecurityException 导致服务创建失败 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Android 13(API 33) 起前台服务通知需要用户授权后才可见（影响通知栏「停止」入口） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -19,16 +24,14 @@
             android:name=".feature.clicker.FloatingWindowService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync"
-            tools:ignore="ForegroundServicePermission" />  <!-- 根据浮窗服务实际工作类型选择，如 "dataSync" 或 "specialUse" -->
+            android:foregroundServiceType="dataSync" />
 
         <!-- 悬浮快捷点击服务（新功能）：前台服务维持悬浮窗与识别链路存活 -->
         <service
             android:name=".feature.quickclick.QuickClickService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync"
-            tools:ignore="ForegroundServicePermission" />
+            android:foregroundServiceType="dataSync" />
 
         <!-- 声明无障碍服务，权限设为 android.permission.BIND_ACCESSIBILITY_SERVICE -->
         <service

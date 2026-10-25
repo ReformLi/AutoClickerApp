@@ -235,7 +235,7 @@ class QuickClickService : Service() {
     override fun onDestroy() {
         destroyed = true
         // 通知 Activity 服务已停止
-        sendBroadcast(Intent("com.hpu.autoclicker.SERVICE_STOPPED"))
+        sendBroadcast(Intent("com.hpu.autoclicker.SERVICE_STOPPED").setPackage(packageName))
         dragHandler.removeCallbacksAndMessages(null)
         matchHandler.removeCallbacksAndMessages(null)
         matchExecutor.shutdownNow()
@@ -1522,6 +1522,19 @@ class QuickClickService : Service() {
                 .build()
             startForeground(2, notification)
         }
+    }
+
+    /**
+     * Android 15(API 35) 起 dataSync 类型前台服务有 6 小时 / 24 小时运行时长上限，
+     * 超时后系统回调本方法，必须在几秒内停止服务，
+     * 否则系统以 RemoteServiceException 结束应用进程。
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            super.onTimeout(startId, fgsType)
+        }
+        android.util.Log.w("QuickClick", "dataSync 前台服务达到运行时长上限，主动停止")
+        stopSelf(startId)
     }
 
     /** 展开区在主按钮下方，展开/编辑后校正窗口位置避免超出屏幕底部 */

@@ -1,10 +1,12 @@
 package com.hpu.autoclicker
 
+import android.Manifest
 import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +14,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +47,15 @@ class MainActivity : AppCompatActivity() {
     private var uiState by mutableStateOf(MainUiState())
 
     private var isServiceRunning = false
+
+    /**
+     * 通知栏「停止」入口依赖前台服务通知，Android 13(API 33) 起需要用户授权。
+     * 拒绝授权不影响悬浮窗本身运行，因此不阻断启动流程。
+     */
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (!granted) toast("未授权通知，前台服务通知栏入口将不可见")
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -227,6 +239,7 @@ class MainActivity : AppCompatActivity() {
      * 启动悬浮窗服务（按当前模式路由：旧功能 / 新功能快捷点击）
      */
     private fun startFloatingService() {
+        requestNotificationPermissionIfNeeded()
         val intent = Intent(this, currentServiceClass())
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
@@ -236,6 +249,17 @@ class MainActivity : AppCompatActivity() {
         isServiceRunning = true
         toast("悬浮窗已启动")
         updateToggleButton()
+    }
+
+    /** Android 13+ 运行时申请通知权限，保证前台服务通知（含「停止」按钮）可见 */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     /**

@@ -127,6 +127,9 @@ feature.main   feature.clicker   feature.quickclick
 
 - **无障碍服务已移至 `core.accessibility`**，其 ComponentName 变为 `com.hpu.autoclicker/.core.accessibility.AutoClickerAccessibilityService`。重构后需**在系统设置中关闭再重新开启该无障碍服务**，否则旧入口失效、代点器/连点器点击无效。
 - **AndroidManifest** 中三个组件的 `android:name` 已随包更新（`.feature.clicker.FloatingWindowService`、`.feature.quickclick.QuickClickService`、`.core.accessibility.AutoClickerAccessibilityService`）；`MainActivity` 仍在根包。
+- **前台服务类型权限（Android 14+ 硬性要求）**：两个悬浮窗服务声明 `android:foregroundServiceType="dataSync"`，manifest **必须**同时声明 `android.permission.FOREGROUND_SERVICE_DATA_SYNC`，否则 `startForeground()` 抛 `SecurityException` → 「Unable to create service」闪退。改动服务类型时，类型字符串与类型权限要成对修改，且不再使用 `tools:ignore="ForegroundServicePermission"` 掩盖问题。
+  - `POST_NOTIFICATIONS`（Android 13+）由 `MainActivity` 运行时申请，拒绝授权不阻断悬浮窗启动，仅通知栏入口不可见。
+  - Android 15+ 的 `dataSync` 有 6 小时 / 24 小时上限，系统回调 `Service.onTimeout(startId, fgsType)`，两个服务均已覆写并 `stopSelf(startId)` 优雅停止（不可不处理，否则系统以 `RemoteServiceException` 结束进程）。若需无限时长，可评估 `specialUse` 类型（需额外 `FOREGROUND_SERVICE_SPECIAL_USE` 权限与 `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` 属性，并受应用商店政策约束）。
 - **Service 内弹框**：`TYPE_APPLICATION_OVERLAY` 弹框须 `clearFlags(FLAG_ALT_FOCUSABLE_IM)` 才能弹软键盘；承载 `ComposeView` 的弹框须在 `show()` 前把 `ServiceComposeHost` 挂到窗口 DecorView。**所有 Service 内弹框一律走 `ServiceDialogs.show()`**，不要自己 new `AlertDialog`——统一宿主负责透明窗底、overlay 窗口类型、去平台双层框与宽度。
 - **`ClickPoint`** 作为数据类内联在 `feature/clicker/FloatingWindowService.kt` 末尾；连点器的持久化模型已拆到 `feature/clicker/ClickerScript.kt`（`ClickerPointData` / `ClickerScript` / `ClickerScriptStore`）；**`QuickScript`/`QuickClickStore`** 内联在 `feature/quickclick/QuickClickConfig.kt`。
 - **UI 硬约束（美化时也不可破坏）**：
