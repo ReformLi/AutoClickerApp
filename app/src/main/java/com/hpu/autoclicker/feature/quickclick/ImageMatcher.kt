@@ -46,7 +46,7 @@ object ImageMatcher {
     fun match(
         screen: Bitmap,
         template: Bitmap,
-        threshold: Float = 0.85f,
+        threshold: Float = 0.80f,
         scale: Int = 2,
         grayMode: Boolean = true,
     ): MatchResult {
@@ -123,7 +123,7 @@ object ImageMatcher {
         screen: Bitmap,
         template: Bitmap,
         region: Rect,
-        threshold: Float = 0.85f,
+        threshold: Float = 0.80f,
         scale: Int = 2,
         grayMode: Boolean = true,
     ): MatchResult {

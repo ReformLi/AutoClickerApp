@@ -63,7 +63,7 @@ class QuickConfigFormState {
     // ===== 图像识别相关 =====
     var imageFileName by mutableStateOf("")          // 已选/已截模板图文件名
     var imageRegionRect by mutableStateOf("")        // 截图捕获时的框选区域 "l,t,r,b"（屏幕像素）
-    var thresholdText by mutableStateOf("0.85")     // 相似度阈值
+    var thresholdText by mutableStateOf("0.80")     // 相似度阈值
     var scaleText by mutableStateOf("2")            // 降采样倍率
     var regionFull by mutableStateOf(true)          // true=全屏匹配，false=仅上次框选区域
     var grayMode by mutableStateOf(true)            // 灰度匹配
@@ -72,7 +72,7 @@ class QuickConfigFormState {
     var showAdvanced by mutableStateOf(false)       // 高级设置展开
 
     /** 表单图像参数是否合法（供保存前校验） */
-    fun thresholdOrDefault(): Float = thresholdText.toFloatOrNull()?.coerceIn(0f, 1f) ?: 0.85f
+    fun thresholdOrDefault(): Float = thresholdText.toFloatOrNull()?.coerceIn(0f, 1f) ?: 0.80f
     fun scaleOrDefault(): Int = scaleText.toIntOrNull()?.coerceIn(1, 4) ?: 2
     fun retryOrDefault(): Int = retryText.toIntOrNull()?.coerceAtLeast(0) ?: 1
     fun retryDelayOrDefault(): Long = retryDelayText.toLongOrNull()?.coerceAtLeast(0) ?: 300L
@@ -250,12 +250,12 @@ private fun ImageRecognitionSection(
             modifier = Modifier.fillMaxWidth(),
         )
         if (state.showAdvanced) {
-            AppFieldLabel(text = "相似度阈值（0~1，默认 0.85）", modifier = Modifier.padding(top = Dimens.space8))
+            AppFieldLabel(text = "相似度阈值（0~1，默认 0.80）", modifier = Modifier.padding(top = Dimens.space8))
             AppTextField(
                 value = state.thresholdText,
                 onValueChange = { state.thresholdText = it },
                 modifier = Modifier.padding(top = Dimens.fieldGap),
-                hint = "0.85",
+                hint = "0.80",
                 keyboardType = KeyboardType.Number,
             )
             AppFieldLabel(text = "降采样倍率（1~4，默认 2，越大越快越粗）", modifier = Modifier.padding(top = Dimens.space8))

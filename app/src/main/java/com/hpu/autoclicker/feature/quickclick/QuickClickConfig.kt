@@ -21,7 +21,7 @@ data class QuickClickConfig(
     val autoCollapse: Boolean = false,   // 点击后是否自动收起悬浮窗
     // ===== 图像识别扩展字段（仅 TYPE_IMAGE 有意义）=====
     val imageFileName: String = "",      // 模板图文件名（相对 filesDir/images/）
-    val imageThreshold: Float = 0.85f,   // 相似度阈值 [0,1]
+    val imageThreshold: Float = 0.80f,   // 相似度阈值 [0,1]
     val imageScale: Int = 2,             // 降采样倍率 1~4
     val imageRegion: String = "full",    // 匹配区域：full / last（仅上次框选区域）
     val imageGrayMode: Boolean = true,   // 灰度匹配
@@ -61,7 +61,7 @@ data class QuickClickConfig(
             y = o.optDouble("y", 0.0).toFloat(),
             autoCollapse = o.optBoolean("autoCollapse", false),
             imageFileName = o.optString("imageFileName", ""),
-            imageThreshold = o.optDouble("imageThreshold", 0.85).toFloat(),
+            imageThreshold = o.optDouble("imageThreshold", 0.80).toFloat(),
             imageScale = o.optInt("imageScale", 2),
             imageRegion = o.optString("imageRegion", "full"),
             imageGrayMode = o.optBoolean("imageGrayMode", true),
