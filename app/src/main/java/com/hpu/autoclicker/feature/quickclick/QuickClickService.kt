@@ -14,7 +14,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.text.InputFilter
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -79,24 +78,6 @@ class QuickClickService : Service() {
 
         /** 截屏前等待悬浮窗/弹框真正从画面消失的时间 */
         private const val HIDE_BEFORE_SCREENSHOT_MS = 150L
-
-        /** 按钮名称限长规则：含中文 ≤2 字，纯英文/数字 ≤3 字符 */
-        private fun quickNameMaxLength(text: CharSequence): Int =
-            if (text.any { it.code > 0x2E80 }) 2 else 3
-
-        /** 输入时按语言截断，避免按钮上出现省略号 */
-        private val QUICK_NAME_FILTER = InputFilter { source, start, end, dest, dstart, dend ->
-            val result = dest.subSequence(0, dstart).toString() +
-                source.subSequence(start, end).toString() +
-                dest.subSequence(dend, dest.length).toString()
-            val max = quickNameMaxLength(result)
-            if (result.length <= max) {
-                null
-            } else {
-                val keep = max - (dest.length - (dend - dstart))
-                if (keep <= 0) "" else source.subSequence(start, start + keep)
-            }
-        }
     }
 
     private lateinit var windowManager: WindowManager
@@ -1100,7 +1081,7 @@ class QuickClickService : Service() {
                 ) {
                     QuickConfigDialogContent(
                         state = form,
-                        nameFilter = ::limitQuickName,   // 名称限长：含中文 ≤2 字、纯英文/数字 ≤3 字符
+                        nameFilter = ::limitQuickName,   // 名称限长：含中文 ≤3 字、纯英文/数字 ≤6 字符
                         screenshotSupported = AutoClickerAccessibilityService.instance
                             ?.isScreenshotSupported() == true,
                         onCaptureScreenshot = { startScreenshotCapture(form, dialogRef) },

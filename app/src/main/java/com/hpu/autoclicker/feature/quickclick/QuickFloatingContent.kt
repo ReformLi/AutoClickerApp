@@ -3,6 +3,7 @@ package com.hpu.autoclicker.feature.quickclick
 import android.view.MotionEvent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
@@ -14,6 +15,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,8 +26,11 @@ import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.hpu.autoclicker.R
 import com.hpu.autoclicker.core.ui.FloatingSquareButton
 import com.hpu.autoclicker.core.ui.rememberRawTapDetector
@@ -194,12 +199,43 @@ private fun ChildRow(
         // 拖动中的按钮浮起，投影更明显
         shadowElevation = if (dragging) 10.dp else 4.dp,
     ) {
+        ChildName(name = cfg.name, color = scheme.onPrimary)
+    }
+}
+
+/** 名称最小字号：再小就看不清，宁可轻微裁切也不继续缩 */
+private val ChildNameMinSize = 8.sp
+
+/**
+ * 子按钮名称：按钮只有 40dp 见方，3 个汉字按 labelMedium 放不下。
+ * 不截断也不省略，改为按可用宽度逐档缩小字号，保证名称完整显示。
+ */
+@Composable
+private fun ChildName(name: String, color: Color) {
+    val base = MaterialTheme.typography.labelMedium
+    val measurer = rememberTextMeasurer()
+    BoxWithConstraints(modifier = Modifier.padding(horizontal = 4.dp)) {
+        val maxWidth = constraints.maxWidth
+        val fontSize = remember(name, maxWidth, base) {
+            var size = base.fontSize
+            while (size.value > ChildNameMinSize.value) {
+                val fits = measurer.measure(
+                    text = AnnotatedString(name),
+                    style = base.copy(fontSize = size),
+                    maxLines = 1,
+                    softWrap = false,
+                ).size.width <= maxWidth
+                if (fits) break
+                size = (size.value - 0.5f).sp
+            }
+            size
+        }
         Text(
-            text = cfg.name,
-            color = scheme.onPrimary,
-            style = MaterialTheme.typography.labelMedium,
+            text = name,
+            color = color,
+            style = base.copy(fontSize = fontSize),
             maxLines = 1,
-            modifier = Modifier.padding(horizontal = 4.dp),
+            softWrap = false,
         )
     }
 }

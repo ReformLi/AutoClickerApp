@@ -1,5 +1,6 @@
 package com.hpu.autoclicker.feature.quickclick
 
+import android.text.InputFilter
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -100,7 +101,7 @@ fun QuickConfigDialogContent(
             onValueChange = { state.name = nameFilter(it) },
             modifier = Modifier.padding(top = Dimens.fieldGap),
             hint = "默认为“按钮N”",
-            maxLength = 10,
+            inputFilter = QuickNameInputFilter,
         )
 
         // 动作类型：分段单选，与主页「连点器 / 代点器」同款控件
@@ -166,6 +167,29 @@ private fun actionTypeHint(type: String): String = when (type) {
     QuickClickConfig.TYPE_IMAGE -> "图像识别：截取或选择模板图，匹配到后点击"
     QuickClickConfig.TYPE_COORD -> "坐标点击：按屏幕像素坐标直接点击"
     else -> "文本匹配：在屏幕上查找目标文字并点击"
+}
+
+/** 按钮名称限长：含中文 ≤3 字，纯英文/数字 ≤6 字符（悬浮按钮上会按宽度自动缩字号） */
+internal fun quickNameMaxLength(text: CharSequence): Int =
+    if (text.any { it.code > 0x2E80 }) 3 else 6
+
+/**
+ * 名称输入的硬限制：超长部分直接由输入框丢弃。
+ * 不走「状态回灌 + setText」截断，避免快速输入时重组滞后导致漏截。
+ */
+internal val QuickNameInputFilter = InputFilter { source, start, end, dest, dstart, dend ->
+    val result = buildString {
+        append(dest, 0, dstart)
+        append(source, start, end)
+        append(dest, dend, dest.length)
+    }
+    val max = quickNameMaxLength(result)
+    if (result.length <= max) {
+        null
+    } else {
+        val keep = max - (dest.length - (dend - dstart))
+        if (keep <= 0) "" else source.subSequence(start, start + keep)
+    }
 }
 
 /** 文本匹配配置区：目标文字 */
