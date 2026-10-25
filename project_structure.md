@@ -53,7 +53,8 @@ com.hpu.autoclicker
     ├── clicker/                       # 「连点器」= 旧功能（坐标循环连点）
     │   ├── FloatingWindowService.kt   # 悬浮窗主服务 + ClickPoint 数据类 + 脚本管理/透明度/输入/确认弹框逻辑
     │   ├── FloatingServiceContent.kt  # 悬浮窗 Compose 内容 + FloatingServiceUiState（运行态裁剪按钮栏）
-    │   ├── PipeLineView.kt            # 滑动点连线的自绘 View（起终点 + 箭头）
+    │   ├── PipeLineView.kt            # 滑动通道自绘 View（品牌青轨带 + 实线中线 + 白色 V 形箭头，两端按标记半径留白，执行时切强调色）
+    │   ├── PointMarkerView.kt         # 点位标记自绘 View（点击 / 滑动起点 / 滑动终点共用的 44dp 圆角方块，执行时切强调色）
     │   ├── ClickerScript.kt           # ClickerPointData / ClickerScript / ClickerScriptStore（clicker_script_config：scripts / window_alpha / point_alpha + 旧 click_points.json 一次性迁移）
     │   └── ClickerDialogs.kt          # SettingsDialogContent（循环次数 + 脚本列表） + PointSettingsDialogContent（点击点设置） + ClickerInputDialogState
     │
@@ -85,7 +86,7 @@ com.hpu.autoclicker
 
 ### `core.theme`（设计 token）
 品牌色为「钢青 Teal-Steel」（浅 `#0F6E7D` / 深 `#5AD1E0`），**显式不启用 Material3 动态取色**。文件拆分：
-- `Color.kt`：浅/深全量 tone（primary + surfaceContainer 五级 + outline + 语义色带容器）。**中性色与品牌主色同 hue 家族**（低饱和青灰），表面层级靠亮度差而非阴影划分；`AppSemanticColors` 承载 ColorScheme 没有槽位的 success/warning/primaryPressed；`OverlayPalette` 是原生浮层专用色板（品牌实心块/强调色/操作栏底/分隔线/遮罩/网格/三分线/画布底），与 Compose 侧同源但不受深浅主题切换；
+- `Color.kt`：浅/深全量 tone（primary + surfaceContainer 五级 + outline + 语义色带容器）。**中性色与品牌主色同 hue 家族**（低饱和青灰），表面层级靠亮度差而非阴影划分；`AppSemanticColors` 承载 ColorScheme 没有槽位的 success/warning/primaryPressed；`OverlayPalette` 是原生浮层专用色板（品牌实心块/强调色/品牌渐变亮暗端/品牌浅底与浅底前景色/操作栏底/分隔线/遮罩/网格/三分线/画布底），与 Compose 侧同源但不受深浅主题切换；
 - `Type.kt` / `Shape.kt` / `Dimens.kt`：字号字重、圆角、间距阶梯的唯一来源，页面禁止硬编码。间距除 4/8/12/16/24/32 基础阶梯外，另有一组语义间距（`screenVMargin` 页面留白、`sectionGap` 分区之间、`blockGap` 分区内块之间、`fieldGap` 字段与输入框之间、`dialogHPadding`/`dialogVPadding` 弹框内边距），排版需求直接取语义名而非裸数值；
 - `Theme.kt`：`AutoClickerTheme` 装配 ColorScheme + Typography + Shapes。
 
@@ -100,7 +101,7 @@ XML 侧 `res/values/colors.xml`（含 values-night）仍服务于主题/状态�
 主页。`MainUiState` 为唯一状态源，`MainActivity` 刷新权限/服务状态后驱动重组；含模式分段开关（连点器/代点器）。布局为分区式：Hero 卡片（品牌色底 + 图标 + 模式说明）→ 权限与状态（标题行：标题 + 就绪徽标在左、行尾紧凑「刷新」胶囊按钮；下方卡片三行状态，行间分隔线，条件显示的「获取权限」按钮）→ 运行模式（分段开关）→ 底部主操作（启动/关闭，平铺占满整行）。权限齐备时「获取权限」按钮自动消失，由状态卡片说明一切。
 
 ### `feature.clicker`（连点器，旧功能）
-可拖动、边缘吸附的悬浮主按钮 + 展开操作栏，管理编号点击点与滑动对，按序循环执行点击/滑动/系统按键，支持总循环次数与随机偏移。**运行中展开栏只保留主按钮与停止按钮**（其余按钮在 Compose 内容里直接不渲染，`FloatingServiceUiState.isRunning` 为唯一开关），主按钮仍可展开/折叠。脚本管理迁到「悬浮窗设置」弹框：命名保存（名称 ≤12 字）/ 点击加载（有未保存点位先确认覆盖，加载前先 `stopRunning`）/ 改名 / 删除，列表行与代点器共用 `AppScriptList`；点位与透明度分别存于 `clicker_script_config.xml` 的 `scripts` 与 `window_alpha` / `point_alpha`（与代点器的 `window_alpha` 独立），旧的 `files/click_points.json` 只在首次读取脚本列表时迁移为「默认脚本」一次（`legacy_migrated` 标记）。“隐藏”按钮已移除，由透明度弹框替代：弹框内两根滑块分别控制悬浮窗与点击 / 滑动点位的不透明度，拖动期间弹框隐藏，进行条（`OpacityDragPreview`，20% 不透明度）显示在被拖动滑块的原位置（位置由滑块通过 `onGloballyPositioned` 上报的屏幕矩形决定）。
+可拖动、边缘吸附的悬浮主按钮 + 展开操作栏，管理编号点击点与滑动对，按序循环执行点击/滑动/系统按键，支持总循环次数与随机偏移。**点位视觉统一走 `PointMarkerView`**：44dp 圆角方块（14dp 圆角），点击点为品牌青实心渐变 + 白色描边 + 数字外套细白环，滑动起点为实心态、终点为浅底描边态；**滑动通道走 `PipeLineView`**：品牌青半透明轨带 + 实线中线 + 白色 V 形箭头，两端按标记半径留白。**运行中点位保持正常显示**（沿用用户设置的 `point_alpha`，不再压到 30%），手势穿透只靠 `FLAG_NOT_TOUCHABLE`；某个点正在执行时该标记（滑动时含起点 / 终点 / 通道）短暂切到强调色 `OverlayPalette.accent` 强调「这一步已执行」，执行完复原。**运行中展开栏只保留主按钮与停止按钮**（其余按钮在 Compose 内容里直接不渲染，`FloatingServiceUiState.isRunning` 为唯一开关），主按钮仍可展开/折叠。脚本管理迁到「悬浮窗设置」弹框：命名保存（名称 ≤12 字）/ 点击加载（有未保存点位先确认覆盖，加载前先 `stopRunning`）/ 改名 / 删除，列表行与代点器共用 `AppScriptList`；点位与透明度分别存于 `clicker_script_config.xml` 的 `scripts` 与 `window_alpha` / `point_alpha`（与代点器的 `window_alpha` 独立），旧的 `files/click_points.json` 只在首次读取脚本列表时迁移为「默认脚本」一次（`legacy_migrated` 标记）。“隐藏”按钮已移除，由透明度弹框替代：弹框内两根滑块分别控制悬浮窗与点击 / 滑动点位的不透明度，拖动期间弹框隐藏，进行条（`OpacityDragPreview`，20% 不透明度）显示在被拖动滑块的原位置（位置由滑块通过 `onGloballyPositioned` 上报的屏幕矩形决定）。
 
 ### `feature.quickclick`（代点器，新功能）
 折叠/展开/编辑三态悬浮按钮，**启动为仅主按钮的折叠态**，单击主按钮展开/折叠（无子按钮时单击直接进入编辑态）。为子按钮配置「目标文字」（文本匹配）、「模板图片」（图像识别）或「X/Y 坐标」（坐标点击），点击时经无障碍定位或直接按坐标模拟点击；图像识别用 `ImageMatcher` 的纯 Kotlin NCC 匹配、`RegionSelectView`/`RegionCaptureOverlay` 框选模板（支持 `RegionRatioBar` 锁定 1:1 / 4:3 / 16:9 / 自定义等裁剪比例）、`ImagePickActivity` 相册裁剪；坐标点击支持手填坐标或经 `CoordinatePickOverlay` 全屏置灰网格拾取（触摸不会穿透到下层应用）。截图/选图期间悬浮窗与配置弹框整体隐藏（弹框同时置 `FLAG_NOT_TOUCHABLE`），结束后恢复；框选页与取点页不设取消按钮，系统返回键即退出并回到配置弹框，相册裁剪页返回同样回传取消并恢复弹框。支持编辑态单击子按钮打开修改/删除弹框、长按拖动排序、脚本另存为/加载/改名/删除、名称按中英文限长；编辑态的「X」关闭悬浮窗（对比 `savedSnapshot` 判断未保存改动并提示保存，未命名列表先输入脚本名），「透明度」按钮用滑块实时调整 `root.alpha` 并持久化到 `window_alpha`。

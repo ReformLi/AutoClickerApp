@@ -185,6 +185,18 @@ internal object OverlayPalette {
     /** 浮层上的品牌实心块（按钮、选中比例）：品牌主色 + 白字 */
     val brand = Color(0xFF0F6E7D)
 
+    /** 品牌渐变亮端（点位标记、通道的渐变起点） */
+    val brandLight = Color(0xFF17838F)
+
+    /** 品牌渐变暗端（点位标记、通道的渐变终点） */
+    val brandDeep = Color(0xFF0A5A68)
+
+    /** 品牌浅色底（滑动终点标记这类「描边态」浮层块） */
+    val brandSoft = Color(0xFFC9E9EE)
+
+    /** brandSoft 上的前景色 */
+    val onBrandSoft = Color(0xFF00363D)
+
     /** 浮层上的品牌强调色（十字线、提示文字）：深色底上对比度更高 */
     val accent = Color(0xFF5AD1E0)
 

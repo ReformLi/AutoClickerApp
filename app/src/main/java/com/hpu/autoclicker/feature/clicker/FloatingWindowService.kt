@@ -11,10 +11,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -26,7 +24,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.TextView
 import android.widget.Toast
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Modifier
@@ -101,12 +98,6 @@ class FloatingWindowService : Service() {
     companion object {
         val clickPoints = mutableListOf<ClickPoint>()   // 静态点击按钮列表
     }
-
-    // 点击点的一些尺寸参数
-    private val pointSize = 60                   // 圆形直径 dp（实际会转 px）
-//    private val pointBackground = "#FF5722"      // 橙色背景
-
-    private var pointSizePx = 0
 
     // 运行状态（读写统一落到 ui 状态，UI 自动刷新启动/停止图标与按钮可用性）
     private var isRunning: Boolean
@@ -471,8 +462,8 @@ class FloatingWindowService : Service() {
                 pointCount--
             }
         }
-        // 创建带编号的圆形按钮
-        val pointView = createCircleButton(label, pairId, isStart) // 文字显示 label
+        // 创建带编号的点位标记
+        val pointView = createPointMarker(label, pairId, isStart) // 文字显示 label
 
         val initX = xAxis - pointView.layoutParams.width / 2
         val initY = yAxis - pointView.layoutParams.height / 2
@@ -521,7 +512,7 @@ class FloatingWindowService : Service() {
 
         clickPoints.add(point)
 
-        // 应用用户设置的点位透明度（运行期会再统一压到 ≤0.3）
+        // 应用用户设置的点位透明度（运行期沿用同一数值）
         pointView.alpha = pointAlpha
         windowManager.addView(pointView, pointParams)
         setupPointDrag(pointView, pointParams, point)
@@ -675,6 +666,7 @@ class FloatingWindowService : Service() {
         // 存入 map
         pipeMap[pairId] = Pair(lineView, lineParams)
         lineView.alpha = pointAlpha
+        lineView.markerRadius = PointMarkerView.RADIUS_DP * resources.displayMetrics.density
         // 2. 先添加管道到窗口（使其位于下层）
         windowManager.addView(lineView, lineParams)
 
@@ -743,34 +735,15 @@ class FloatingWindowService : Service() {
         refresh()
     }
 
-    private fun createCircleButton(label: String, pairId: Int, isStart: Boolean): TextView {
-        val isSwipePoint = pairId != -1
-        val sizeDp = 40
-        val sizePx = (sizeDp * resources.displayMetrics.density).toInt()
-        val colors = when {
-            !isSwipePoint -> intArrayOf(Color.parseColor("#FF8A50"), Color.parseColor("#FF5722"))
-            isStart -> intArrayOf(Color.parseColor("#28D17C"), Color.parseColor("#00A86B"))
-            else -> intArrayOf(Color.parseColor("#7C6CFF"), Color.parseColor("#4C5CFF"))
-        }
-        val strokeColor = when {
-            !isSwipePoint -> Color.parseColor("#FFFFF3")
-            isStart -> Color.parseColor("#D8FFE9")
-            else -> Color.parseColor("#E3E0FF")
-        }
-
-        return TextView(this).apply {
-            text = label
-            textSize = if (isSwipePoint) 14f else 18f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            includeFontPadding = false
-            setShadowLayer(2f, 0f, 1f, Color.parseColor("#66000000"))
-            background = GradientDrawable(GradientDrawable.Orientation.TL_BR, colors).apply {
-                shape = GradientDrawable.OVAL
-                setStroke((2 * resources.displayMetrics.density).toInt(), strokeColor)
+    private fun createPointMarker(label: String, pairId: Int, isStart: Boolean): PointMarkerView {
+        val sizePx = (PointMarkerView.SIZE_DP * resources.displayMetrics.density).toInt()
+        return PointMarkerView(this).apply {
+            style = when {
+                pairId == -1 -> PointMarkerView.Style.CLICK
+                isStart -> PointMarkerView.Style.START
+                else -> PointMarkerView.Style.END
             }
-            elevation = 10f * resources.displayMetrics.density
+            this.label = label
             layoutParams = ViewGroup.LayoutParams(sizePx, sizePx)
         }
     }
@@ -814,6 +787,16 @@ class FloatingWindowService : Service() {
         }, 80)
     }
 
+    /**
+     * 点位 / 通道的执行态强调：执行中的操作短暂变色，而不是消失。
+     */
+    private fun setHighlight(view: View?, on: Boolean) {
+        when (view) {
+            is PointMarkerView -> view.highlighted = on
+            is PipeLineView -> view.highlighted = on
+        }
+    }
+
     private fun performPointClick(
         service: AutoClickerAccessibilityService,
         point: ClickPoint,
@@ -824,9 +807,9 @@ class FloatingWindowService : Service() {
     ) {
         val clickDuration = duration.coerceAtLeast(50L)
 
-        // 首次创建悬浮窗后，点击点窗口可能仍短暂参与命中测试。
-        // 点击前隐藏当前点并再次刷新不可触摸标记，避免首个坐标手势落到悬浮点自身。
-        point.view.visibility = View.INVISIBLE
+        // 点位保持可见，执行期间改为高亮强调；
+        // 刷新不可触摸标记，避免首个坐标手势落到悬浮点自身
+        setHighlight(point.view, true)
         point.params?.let { params ->
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             windowManager.updateViewLayout(point.view, params)
@@ -834,7 +817,7 @@ class FloatingWindowService : Service() {
 
         runHandler.postDelayed({
             if (!isRunning) {
-                point.view.visibility = View.VISIBLE
+                setHighlight(point.view, false)
                 onFinished()
                 return@postDelayed
             }
@@ -842,7 +825,7 @@ class FloatingWindowService : Service() {
             service.performClick(x, y, clickDuration)
 
             runHandler.postDelayed({
-                point.view.visibility = View.VISIBLE
+                setHighlight(point.view, false)
                 onFinished()
             }, clickDuration + 80)
         }, 80)
@@ -888,11 +871,10 @@ class FloatingWindowService : Service() {
             false
         }
 
-        // 所有点击点圆形按钮半透明可见，让手势穿透到应用层；
-        // 用户已把点位透明度调得更低时保留其设置，不再强行提亮
-        val runningPointAlpha = minOf(pointAlpha, 0.3f)
+        // 所有点击点保持正常显示（沿用用户设置的点位透明度）；
+        // 手势穿透靠 FLAG_NOT_TOUCHABLE 实现，不再靠压暗视觉
         for (point in clickPoints) {
-            point.view.alpha = runningPointAlpha
+            point.view.alpha = pointAlpha
             point.params?.let { params ->
                 params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                 windowManager.updateViewLayout(point.view, params)
@@ -902,7 +884,7 @@ class FloatingWindowService : Service() {
         // 管道也必须穿透，否则滑动路径容易被悬浮管道窗口拦截
         for ((_, pipePair) in pipeMap) {
             val (lineView, params) = pipePair
-            lineView.alpha = runningPointAlpha
+            lineView.alpha = pointAlpha
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             windowManager.updateViewLayout(lineView, params)
         }
@@ -975,20 +957,20 @@ class FloatingWindowService : Service() {
                                 return
                             }
 
-                            // 隐藏起点、终点和管道，避免悬浮窗遮挡滑动路径
-                            startView.visibility = View.INVISIBLE
-                            endView.visibility = View.INVISIBLE
-                            pipeMap[point.pairId]?.first?.visibility = View.INVISIBLE
+                            // 起点、终点与管道保持可见，执行期间整体高亮强调
+                            setHighlight(startView, true)
+                            setHighlight(endView, true)
+                            setHighlight(pipeMap[point.pairId]?.first, true)
 
                             runHandler.postDelayed({
                                 // 调用优化后的 performSwipe
                                 service.performSwipe(startCx, startCy, endCx, endCy, point.touchDuration)
 
-                                // 手势执行后恢复视图
+                                // 手势执行后恢复显示状态
                                 runHandler.postDelayed({
-                                    startView.visibility = View.VISIBLE
-                                    endView.visibility = View.VISIBLE
-                                    pipeMap[point.pairId]?.first?.visibility = View.VISIBLE
+                                    setHighlight(startView, false)
+                                    setHighlight(endView, false)
+                                    setHighlight(pipeMap[point.pairId]?.first, false)
                                 }, maxOf(point.touchDuration, 200))   // 等待手势完成
 
                                 remaining--
@@ -1011,8 +993,8 @@ class FloatingWindowService : Service() {
                             runHandler.postDelayed({ performRound(currentIndex + 1) }, point.delay)
                             return
                         }
-                        // 双击：两个快速点击
-                        point.view.visibility = View.INVISIBLE
+                        // 双击：两个快速点击，执行期间点位高亮
+                        setHighlight(point.view, true)
                         point.params?.let { params ->
                             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                             windowManager.updateViewLayout(point.view, params)
@@ -1023,7 +1005,7 @@ class FloatingWindowService : Service() {
                                 service.performClick(targetX, targetY, 50)
                                 remaining--
                                 runHandler.postDelayed({
-                                    point.view.visibility = View.VISIBLE
+                                    setHighlight(point.view, false)
                                     doDouble()
                                 }, point.touchDuration + 50)
                             }, 100)  // 双击间隔100ms
@@ -1080,6 +1062,7 @@ class FloatingWindowService : Service() {
         for (point in clickPoints) {
             point.view.alpha = pointAlpha               // 恢复用户设置的点位透明度
             point.view.visibility = View.VISIBLE
+            setHighlight(point.view, false)
             point.params?.let { params ->
                 params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
                 windowManager.updateViewLayout(point.view, params)
@@ -1091,6 +1074,7 @@ class FloatingWindowService : Service() {
             val (lineView, params) = pipePair
             lineView.alpha = pointAlpha
             lineView.visibility = View.VISIBLE
+            setHighlight(lineView, false)
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             windowManager.updateViewLayout(lineView, params)
         }
@@ -1372,6 +1356,7 @@ class FloatingWindowService : Service() {
                     val lineParams = createPipeLineLayoutParams()
                     pipeMap[pairId] = Pair(lineView, lineParams)
                     lineView.alpha = pointAlpha
+                    lineView.markerRadius = PointMarkerView.RADIUS_DP * resources.displayMetrics.density
                     windowManager.addView(lineView, lineParams)
                 }
                 val point = addClickPoint(pairId, data.isStart)
