@@ -1,5 +1,6 @@
 package com.hpu.autoclicker.feature.quickclick
 
+import android.accessibilityservice.GestureDescription
 import android.app.AlertDialog
 import android.app.Notification
 import android.app.NotificationChannel
@@ -8,8 +9,10 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Point
+import android.graphics.PointF
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -47,11 +50,13 @@ import com.hpu.autoclicker.core.ui.ServiceDialogs
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlin.random.Random
 
 /**
  * 悬浮快捷点击服务（新功能）
  *
- * 链路：用户手动点悬浮子按钮 → 无障碍文本匹配 → 拿到坐标 → dispatchGesture 模拟点击
+ * 链路：用户手动点悬浮子按钮 → 识别（文本 / 图像 / 坐标）拿到坐标
+ *      → 随机偏移 → 按动作类型（点击 / 双击 / 长按 / 滑动）dispatchGesture 注入
  *
  * 三种状态：
  * - 折叠态：屏幕上只有一个总按钮，零编辑控件；单击 → 展开
@@ -78,6 +83,9 @@ class QuickClickService : Service() {
 
         /** 截屏前等待悬浮窗/弹框真正从画面消失的时间 */
         private const val HIDE_BEFORE_SCREENSHOT_MS = 150L
+
+        /** 点击 / 双击的手势按压时长：固定 50ms，不用 0（0 容易被系统判为无效手势） */
+        private const val ACTION_TAP_DURATION_MS = 50L
     }
 
     private lateinit var windowManager: WindowManager
@@ -603,11 +611,11 @@ class QuickClickService : Service() {
         }
     }
 
-    // ==================== 识别 → 点击链路 ====================
+    // ==================== 识别 → 动作链路 ====================
 
-    /** 子按钮点击：防抖 → 文本匹配 → dispatchGesture 点击 */
+    /** 子按钮点击：防抖 → 识别坐标 → 按动作类型构造并注入手势 */
     private fun onChildClicked(cfg: QuickClickConfig) {
-        if (ui.isEditing) return   // 编辑态不触发识别/点击
+        if (ui.isEditing) return   // 编辑态不触发识别/动作
 
         // 防抖：间隔内不重复执行同一按钮（间隔可在“设置”中调整）
         val now = System.currentTimeMillis()
@@ -623,7 +631,7 @@ class QuickClickService : Service() {
         }
     }
 
-    /** 坐标点击：直接把配置里的屏幕绝对坐标交给无障碍服务点击 */
+    /** 坐标动作：直接把配置里的屏幕绝对坐标交给手势执行 */
     private fun executeCoordinateClick(cfg: QuickClickConfig) {
         val svc = AutoClickerAccessibilityService.instance
         if (svc == null) {
@@ -631,27 +639,128 @@ class QuickClickService : Service() {
             Toast.makeText(this, "无障碍服务未连接，请到系统设置重新开启", Toast.LENGTH_LONG).show()
             return
         }
-        performClickAt(svc, cfg.x, cfg.y, cfg.autoCollapse)
+        performActionAt(svc, cfg.x, cfg.y, cfg)
     }
 
-    /** 统一点击出口：duration 取全局设置，成功后按需自动收起悬浮窗 */
-    private fun performClickAt(
+    /**
+     * 统一动作出口：识别坐标 → 随机偏移（整条链路只加一次）→ 按动作类型构造手势 → 注入。
+     * 点击 / 双击 / 长按以该点为中心；滑动以该点为起点，终点 = 起点 + 方向 × 距离。
+     */
+    private fun performActionAt(
         svc: AutoClickerAccessibilityService,
         x: Float,
         y: Float,
-        autoCollapse: Boolean,
+        cfg: QuickClickConfig,
     ) {
-        val duration = QuickClickStore.getClickDuration(this).toLong()
-        svc.performClick(x, y, duration) { ok ->
+        val start = applyRandomOffset(x, y, cfg)
+        val gesture = buildActionGesture(start.x, start.y, cfg)
+        val submitted = svc.dispatchQuickGesture(gesture) { ok ->
             if (!ok) {
-                Toast.makeText(this, "点击被系统取消（可能被 ROM 拦截）", Toast.LENGTH_SHORT).show()
-            } else if (autoCollapse) {
-                collapse()   // 点击后自动收起悬浮窗
+                Toast.makeText(this, "手势被系统取消，请重试", Toast.LENGTH_SHORT).show()
+            } else if (cfg.autoCollapse) {
+                collapse()   // 动作执行后自动收起悬浮窗
             }
+        }
+        if (!submitted) {
+            setMainAvailable(false)
+            Toast.makeText(this, "手势提交失败，请到系统设置检查无障碍服务", Toast.LENGTH_LONG).show()
         }
     }
 
-    /** 文本匹配 → 拿坐标 → 模拟点击（整条链路 try-catch，不崩溃） */
+    /**
+     * 识别坐标加随机偏移：每次动作只加一次。
+     * 双击两次点击共用同一坐标；滑动只偏移起点，终点由方向向量算出，不再二次随机。
+     * 结果夹在屏幕内并留 1dp 边距，避免贴边坐标让 dispatchGesture 失败。
+     */
+    private fun applyRandomOffset(x: Float, y: Float, cfg: QuickClickConfig): PointF {
+        var px = x
+        var py = y
+        val radius = if (cfg.randomOffsetEnabled) {
+            cfg.randomOffsetRadius.coerceIn(0, QuickClickConfig.MAX_RANDOM_RADIUS)
+        } else {
+            0
+        }
+        if (radius > 0) {
+            px += Random.nextInt(-radius, radius + 1)
+            py += Random.nextInt(-radius, radius + 1)
+        }
+        return PointF(clampGestureX(px), clampGestureY(py))
+    }
+
+    /** 按动作类型构造手势；传入坐标已夹进屏幕安全区 */
+    private fun buildActionGesture(x: Float, y: Float, cfg: QuickClickConfig): GestureDescription {
+        val builder = GestureDescription.Builder()
+        when (cfg.actionType) {
+            QuickClickConfig.ACTION_DOUBLE_CLICK -> {
+                // 两次点击放进同一个 GestureDescription，避免连续 dispatch 被系统丢弃
+                val interval = cfg.doubleClickInterval.coerceIn(
+                    QuickClickConfig.MIN_DOUBLE_INTERVAL,
+                    QuickClickConfig.MAX_DOUBLE_INTERVAL,
+                )
+                repeat(2) { index ->
+                    builder.addStroke(
+                        GestureDescription.StrokeDescription(
+                            tapPath(x, y),
+                            index * interval,
+                            ACTION_TAP_DURATION_MS,
+                        )
+                    )
+                }
+            }
+            QuickClickConfig.ACTION_LONG_PRESS -> {
+                val duration = cfg.longPressDuration.coerceIn(
+                    QuickClickConfig.MIN_LONG_PRESS,
+                    QuickClickConfig.MAX_LONG_PRESS,
+                )
+                builder.addStroke(GestureDescription.StrokeDescription(tapPath(x, y), 0, duration))
+            }
+            QuickClickConfig.ACTION_SWIPE -> {
+                val (dx, dy) = swipeVector(cfg.swipeDirection)
+                val maxDistance = QuickClickConfig.maxSwipeDistance(getScreenWidth(), getScreenHeight())
+                val distance = cfg.swipeDistance
+                    .coerceIn(QuickClickConfig.MIN_SWIPE_DISTANCE, maxDistance)
+                    .toFloat()
+                val path = Path().apply {
+                    moveTo(x, y)
+                    lineTo(clampGestureX(x + dx * distance), clampGestureY(y + dy * distance))
+                }
+                val duration = cfg.swipeDuration.coerceIn(
+                    QuickClickConfig.MIN_SWIPE_DURATION,
+                    QuickClickConfig.MAX_SWIPE_DURATION,
+                )
+                builder.addStroke(GestureDescription.StrokeDescription(path, 0, duration))
+            }
+            else -> builder.addStroke(
+                GestureDescription.StrokeDescription(tapPath(x, y), 0, ACTION_TAP_DURATION_MS)
+            )
+        }
+        return builder.build()
+    }
+
+    /** 单点路径：0.5px 的极小位移避免被系统识别成滑动 */
+    private fun tapPath(x: Float, y: Float): Path = Path().apply {
+        moveTo(x, y)
+        lineTo(x + 0.5f, y)
+    }
+
+    private fun swipeVector(direction: String): Pair<Float, Float> = when (direction) {
+        QuickClickConfig.SWIPE_DOWN -> 0f to 1f
+        QuickClickConfig.SWIPE_LEFT -> -1f to 0f
+        QuickClickConfig.SWIPE_RIGHT -> 1f to 0f
+        else -> 0f to -1f   // 默认上滑
+    }
+
+    /** 手势坐标安全边距：1dp */
+    private val gestureMargin: Float
+        get() = resources.displayMetrics.density.coerceAtLeast(1f)
+
+    private fun clampGestureX(x: Float): Float =
+        x.coerceIn(gestureMargin, (getScreenWidth() - gestureMargin).coerceAtLeast(gestureMargin))
+
+    private fun clampGestureY(y: Float): Float =
+        y.coerceIn(gestureMargin, (getScreenHeight() - gestureMargin).coerceAtLeast(gestureMargin))
+
+    /** 文本匹配 → 拿坐标 → 执行动作（整条链路 try-catch，不崩溃） */
     private fun executeTextClick(cfg: QuickClickConfig) {
         try {
             val svc = AutoClickerAccessibilityService.instance
@@ -673,7 +782,7 @@ class QuickClickService : Service() {
             }
 
             // 坐标用屏幕绝对坐标（findTargetByText 返回 getBoundsInScreen 中心点）
-            performClickAt(svc, pt.x, pt.y, cfg.autoCollapse)
+            performActionAt(svc, pt.x, pt.y, cfg)
         } catch (e: Exception) {
             android.util.Log.e("QuickClick", "点击链路异常", e)
             Toast.makeText(this, "执行失败，请重试", Toast.LENGTH_SHORT).show()
@@ -945,7 +1054,7 @@ class QuickClickService : Service() {
         }
         if (result.confidence >= cfg.imageThreshold) {
             finishImageMatch(template)
-            performClickAt(svc, result.point.x, result.point.y, cfg.autoCollapse)
+            performActionAt(svc, result.point.x, result.point.y, cfg)
         } else {
             onMatchFailed(
                 svc, cfg, template, region, attempt,
@@ -1026,6 +1135,14 @@ class QuickClickService : Service() {
                     retryDelayText = editTarget.imageRetryDelay.toString()
                     // 编辑图像按钮时默认展开高级设置，便于直接调参
                     if (editTarget.type == QuickClickConfig.TYPE_IMAGE) showAdvanced = true
+                    actionType = editTarget.actionType
+                    doubleClickIntervalText = editTarget.doubleClickInterval.toString()
+                    longPressDurationText = editTarget.longPressDuration.toString()
+                    swipeDirection = editTarget.swipeDirection
+                    swipeDistanceText = editTarget.swipeDistance.toString()
+                    swipeDurationText = editTarget.swipeDuration.toString()
+                    randomOffsetEnabled = editTarget.randomOffsetEnabled
+                    randomOffsetRadiusText = editTarget.randomOffsetRadius.toString()
                 }
             }
             val isEdit = editTarget != null
@@ -1108,6 +1225,24 @@ class QuickClickService : Service() {
                 editTarget?.name ?: "按钮${configs.size + 1}"
             }
         )
+        val maxSwipeDistance = QuickClickConfig.maxSwipeDistance(getScreenWidth(), getScreenHeight())
+        // 超范围输入按上限保存并明确提示，避免用户误以为输入值已生效
+        if (form.actionType == QuickClickConfig.ACTION_LONG_PRESS && form.longPressExceedsLimit()) {
+            Toast.makeText(
+                this,
+                "长按时长上限 ${QuickClickConfig.MAX_LONG_PRESS}ms，已按上限保存",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+        if (form.actionType == QuickClickConfig.ACTION_SWIPE &&
+            form.swipeDistanceExceedsLimit(maxSwipeDistance)
+        ) {
+            Toast.makeText(
+                this,
+                "滑动距离上限 ${maxSwipeDistance}px（屏幕短边一半），已按上限保存",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
         val newConfig = when (form.type) {
             QuickClickConfig.TYPE_IMAGE -> {
                 if (form.imageFileName.isEmpty()) {
@@ -1166,7 +1301,17 @@ class QuickClickService : Service() {
                     autoCollapse = form.autoCollapse,
                 )
             }
-        }
+        }.copy(
+            // 动作字段与识别方式正交：三种识别方式共用同一套动作参数
+            actionType = form.actionType,
+            doubleClickInterval = form.doubleClickIntervalOrDefault(),
+            longPressDuration = form.longPressDurationOrDefault(),
+            swipeDirection = form.swipeDirection,
+            swipeDistance = form.swipeDistanceOrDefault(maxSwipeDistance),
+            swipeDuration = form.swipeDurationOrDefault(),
+            randomOffsetEnabled = form.randomOffsetEnabled,
+            randomOffsetRadius = form.randomOffsetRadiusOrDefault(),
+        )
 
         // 清理不再被任何按钮引用的模板图：换图时删旧图；改类型后删临时新图
         val oldImage = editTarget?.takeIf { it.type == QuickClickConfig.TYPE_IMAGE }

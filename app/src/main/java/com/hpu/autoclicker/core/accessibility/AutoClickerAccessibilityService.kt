@@ -164,6 +164,33 @@ class AutoClickerAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * 代点器通用手势注入：点击 / 双击 / 长按 / 滑动共用。
+     * 手势（坐标、偏移、方向、时长）由代点器层构造好，这里只负责提交并回传结果。
+     *
+     * @return dispatchGesture 是否成功提交；false 表示服务断连或被系统拒绝，此时不会再有回调
+     */
+    fun dispatchQuickGesture(
+        gesture: GestureDescription,
+        onResult: ((Boolean) -> Unit)? = null,
+    ): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            onResult?.invoke(false)
+            return false
+        }
+        val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(desc: GestureDescription?) {
+                onResult?.invoke(true)
+            }
+
+            override fun onCancelled(desc: GestureDescription?) {
+                onResult?.invoke(false)
+            }
+        }, null)
+        if (!dispatched) onResult?.invoke(false)
+        return dispatched
+    }
+
+    /**
      * 文本匹配查找目标：返回目标节点的屏幕中心点坐标，null 表示匹配失败。
      *
      * 匹配分三层，逐层放宽（全部按「去掉空白后包含」比较，规避中英文空格/换行差异）：

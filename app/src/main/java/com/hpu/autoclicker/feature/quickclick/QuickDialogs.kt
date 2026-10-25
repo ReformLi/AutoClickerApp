@@ -56,7 +56,7 @@ class QuickConfigFormState {
     var autoCollapse by mutableStateOf(false)
 
     // ===== 坐标点击相关 =====
-    /** 当前动作类型：TYPE_TEXT / TYPE_IMAGE / TYPE_COORD */
+    /** 当前识别方式：TYPE_TEXT / TYPE_IMAGE / TYPE_COORD */
     var type by mutableStateOf(QuickClickConfig.TYPE_TEXT)
     var coordXText by mutableStateOf("")            // 坐标点击 X（屏幕像素）
     var coordYText by mutableStateOf("")            // 坐标点击 Y（屏幕像素）
@@ -72,11 +72,49 @@ class QuickConfigFormState {
     var retryDelayText by mutableStateOf("300")     // 重试间隔 ms
     var showAdvanced by mutableStateOf(false)       // 高级设置展开
 
+    // ===== 动作相关（识别坐标之后怎么执行）=====
+    var actionType by mutableStateOf(QuickClickConfig.ACTION_CLICK)
+    var doubleClickIntervalText by mutableStateOf("150")   // 双击间隔 ms
+    var longPressDurationText by mutableStateOf("800")     // 长按时长 ms
+    var swipeDirection by mutableStateOf(QuickClickConfig.SWIPE_UP)
+    var swipeDistanceText by mutableStateOf("300")         // 滑动距离 px
+    var swipeDurationText by mutableStateOf("300")         // 滑动时长 ms
+    var randomOffsetEnabled by mutableStateOf(true)        // 随机坐标偏移
+    var randomOffsetRadiusText by mutableStateOf("5")      // 偏移半径 px
+
     /** 表单图像参数是否合法（供保存前校验） */
     fun thresholdOrDefault(): Float = thresholdText.toFloatOrNull()?.coerceIn(0f, 1f) ?: 0.80f
     fun scaleOrDefault(): Int = scaleText.toIntOrNull()?.coerceIn(1, 4) ?: 2
     fun retryOrDefault(): Int = retryText.toIntOrNull()?.coerceAtLeast(0) ?: 1
     fun retryDelayOrDefault(): Long = retryDelayText.toLongOrNull()?.coerceAtLeast(0) ?: 300L
+
+    /** 动作参数统一夹到合法区间，空值/非法值回落到默认值（供保存前校验） */
+    fun doubleClickIntervalOrDefault(): Long = doubleClickIntervalText.toLongOrNull()
+        ?.coerceIn(QuickClickConfig.MIN_DOUBLE_INTERVAL, QuickClickConfig.MAX_DOUBLE_INTERVAL)
+        ?: 150L
+
+    fun longPressDurationOrDefault(): Long = longPressDurationText.toLongOrNull()
+        ?.coerceIn(QuickClickConfig.MIN_LONG_PRESS, QuickClickConfig.MAX_LONG_PRESS)
+        ?: 800L
+
+    fun swipeDistanceOrDefault(maxDistance: Int): Int = swipeDistanceText.toIntOrNull()
+        ?.coerceIn(QuickClickConfig.MIN_SWIPE_DISTANCE, maxDistance)
+        ?: 300.coerceIn(QuickClickConfig.MIN_SWIPE_DISTANCE, maxDistance)
+
+    fun swipeDurationOrDefault(): Long = swipeDurationText.toLongOrNull()
+        ?.coerceIn(QuickClickConfig.MIN_SWIPE_DURATION, QuickClickConfig.MAX_SWIPE_DURATION)
+        ?: 300L
+
+    fun randomOffsetRadiusOrDefault(): Int = randomOffsetRadiusText.toIntOrNull()
+        ?.coerceIn(0, QuickClickConfig.MAX_RANDOM_RADIUS)
+        ?: 5
+
+    /** 输入超过上限（保存时会截断，需提示用户） */
+    fun longPressExceedsLimit(): Boolean =
+        (longPressDurationText.toLongOrNull() ?: 0L) > QuickClickConfig.MAX_LONG_PRESS
+
+    fun swipeDistanceExceedsLimit(maxDistance: Int): Boolean =
+        (swipeDistanceText.toIntOrNull() ?: 0) > maxDistance
 }
 
 /**
@@ -104,8 +142,8 @@ fun QuickConfigDialogContent(
             inputFilter = QuickNameInputFilter,
         )
 
-        // 动作类型：分段单选，与主页「连点器 / 代点器」同款控件
-        AppFieldLabel(text = "动作类型", modifier = Modifier.padding(top = Dimens.space16))
+        // 识别方式：分段单选，与主页「连点器 / 代点器」同款控件
+        AppFieldLabel(text = "识别方式", modifier = Modifier.padding(top = Dimens.space16))
         AppSegmentedControl(
             options = listOf("文本", "图像", "坐标"),
             selectedIndex = actionTypeIndex(state.type),
@@ -136,7 +174,22 @@ fun QuickConfigDialogContent(
             else -> TextMatchSection(state)
         }
 
-        // 点击后自动收起悬浮窗（整行可切换，token 化复选行）
+        // 动作类型：拿到识别坐标之后执行哪种手势
+        AppFieldLabel(text = "动作类型", modifier = Modifier.padding(top = Dimens.space16))
+        AppSegmentedControl(
+            options = ACTION_LABELS,
+            selectedIndex = actionIndex(state.actionType),
+            onSelect = { state.actionType = ACTION_TYPES[it] },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = Dimens.fieldGap),
+        )
+        ActionSection(
+            state = state,
+            maxSwipeDistance = QuickClickConfig.maxSwipeDistance(screenWidth, screenHeight),
+        )
+
+        // 动作执行后自动收起悬浮窗（整行可切换，token 化复选行）
         AppCheckboxRow(
             text = "点击后自动收起悬浮窗",
             checked = state.autoCollapse,
@@ -145,6 +198,127 @@ fun QuickConfigDialogContent(
                 .fillMaxWidth()
                 .padding(top = Dimens.space16),
         )
+    }
+}
+
+// ==================== 动作类型选择与参数 ====================
+
+private val ACTION_TYPES = listOf(
+    QuickClickConfig.ACTION_CLICK,
+    QuickClickConfig.ACTION_DOUBLE_CLICK,
+    QuickClickConfig.ACTION_LONG_PRESS,
+    QuickClickConfig.ACTION_SWIPE,
+)
+private val ACTION_LABELS = listOf("点击", "双击", "长按", "滑动")
+private val SWIPE_DIRECTIONS = listOf(
+    QuickClickConfig.SWIPE_UP,
+    QuickClickConfig.SWIPE_DOWN,
+    QuickClickConfig.SWIPE_LEFT,
+    QuickClickConfig.SWIPE_RIGHT,
+)
+private val SWIPE_LABELS = listOf("上", "下", "左", "右")
+
+private fun actionIndex(action: String): Int = ACTION_TYPES.indexOf(action).coerceAtLeast(0)
+private fun swipeIndex(direction: String): Int = SWIPE_DIRECTIONS.indexOf(direction).coerceAtLeast(0)
+
+/**
+ * 动作参数区：只渲染当前动作用到的字段；
+ * 随机偏移是四种动作共用的，统一放在卡片底部。
+ */
+@Composable
+private fun ActionSection(state: QuickConfigFormState, maxSwipeDistance: Int) {
+    val scheme = MaterialTheme.colorScheme
+    AppCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = Dimens.blockGap),
+        border = BorderStroke(Dimens.strokeThin, scheme.outlineVariant),
+    ) {
+        when (state.actionType) {
+            QuickClickConfig.ACTION_DOUBLE_CLICK -> {
+                AppFieldLabel(text = "双击间隔（100~300ms，默认 150）")
+                AppTextField(
+                    value = state.doubleClickIntervalText,
+                    onValueChange = { state.doubleClickIntervalText = it.filter(Char::isDigit) },
+                    modifier = Modifier.padding(top = Dimens.fieldGap),
+                    hint = "150",
+                    keyboardType = KeyboardType.Number,
+                )
+            }
+            QuickClickConfig.ACTION_LONG_PRESS -> {
+                AppFieldLabel(text = "长按时长（200~10000ms，默认 800）")
+                AppTextField(
+                    value = state.longPressDurationText,
+                    onValueChange = { state.longPressDurationText = it.filter(Char::isDigit) },
+                    modifier = Modifier.padding(top = Dimens.fieldGap),
+                    hint = "800",
+                    keyboardType = KeyboardType.Number,
+                )
+            }
+            QuickClickConfig.ACTION_SWIPE -> {
+                AppFieldLabel(text = "滑动方向")
+                AppSegmentedControl(
+                    options = SWIPE_LABELS,
+                    selectedIndex = swipeIndex(state.swipeDirection),
+                    onSelect = { state.swipeDirection = SWIPE_DIRECTIONS[it] },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = Dimens.fieldGap),
+                )
+                AppFieldLabel(
+                    text = "滑动距离（50~${maxSwipeDistance}px，默认 300）",
+                    modifier = Modifier.padding(top = Dimens.space12),
+                )
+                AppTextField(
+                    value = state.swipeDistanceText,
+                    onValueChange = { state.swipeDistanceText = it.filter(Char::isDigit) },
+                    modifier = Modifier.padding(top = Dimens.fieldGap),
+                    hint = "300",
+                    keyboardType = KeyboardType.Number,
+                )
+                AppFieldLabel(
+                    text = "滑动时长（100~2000ms，默认 300）",
+                    modifier = Modifier.padding(top = Dimens.space12),
+                )
+                AppTextField(
+                    value = state.swipeDurationText,
+                    onValueChange = { state.swipeDurationText = it.filter(Char::isDigit) },
+                    modifier = Modifier.padding(top = Dimens.fieldGap),
+                    hint = "300",
+                    keyboardType = KeyboardType.Number,
+                )
+            }
+            else -> AppCaption(text = "单击：在识别到的位置点击一次")
+        }
+
+        HorizontalDivider(
+            thickness = Dimens.divider,
+            color = scheme.outlineVariant,
+            modifier = Modifier.padding(top = Dimens.space12),
+        )
+        AppCheckboxRow(
+            text = "随机坐标偏移",
+            checked = state.randomOffsetEnabled,
+            onCheckedChange = { state.randomOffsetEnabled = it },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (state.randomOffsetEnabled) {
+            AppFieldLabel(
+                text = "偏移半径（0~50px，0 为关闭，默认 5）",
+                modifier = Modifier.padding(top = Dimens.space8),
+            )
+            AppTextField(
+                value = state.randomOffsetRadiusText,
+                onValueChange = { state.randomOffsetRadiusText = it.filter(Char::isDigit) },
+                modifier = Modifier.padding(top = Dimens.fieldGap),
+                hint = "5",
+                keyboardType = KeyboardType.Number,
+            )
+            AppCaption(
+                text = "每次动作前在识别坐标上随机偏移一次；双击两次共用同一位置，滑动只偏移起点",
+                modifier = Modifier.padding(top = Dimens.fieldGap),
+            )
+        }
     }
 }
 
@@ -162,11 +336,11 @@ private fun actionTypeByIndex(index: Int): String = when (index) {
     else -> QuickClickConfig.TYPE_TEXT
 }
 
-/** 当前动作类型的一句话说明 */
+/** 当前识别方式的一句话说明 */
 private fun actionTypeHint(type: String): String = when (type) {
-    QuickClickConfig.TYPE_IMAGE -> "图像识别：截取或选择模板图，匹配到后点击"
-    QuickClickConfig.TYPE_COORD -> "坐标点击：按屏幕像素坐标直接点击"
-    else -> "文本匹配：在屏幕上查找目标文字并点击"
+    QuickClickConfig.TYPE_IMAGE -> "图像识别：匹配模板图，取匹配位置执行所选动作"
+    QuickClickConfig.TYPE_COORD -> "坐标定位：按屏幕像素坐标执行所选动作"
+    else -> "文本匹配：查找目标文字，取文字位置执行所选动作"
 }
 
 /** 按钮名称限长：含中文 ≤3 字，纯英文/数字 ≤6 字符（悬浮按钮上会按宽度自动缩字号） */

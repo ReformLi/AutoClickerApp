@@ -18,14 +18,14 @@ com.hpu.autoclicker
 │
 ├── core/                              # 跨功能共享基础设施（不含业务逻辑）
 │   ├── accessibility/
-│   │   └── AutoClickerAccessibilityService.kt   # 无障碍服务：手势点击/滑动、全局按键、按文本定位节点
+│   │   └── AutoClickerAccessibilityService.kt   # 无障碍服务：手势点击/滑动、代点器通用手势注入、全局按键、按文本定位节点
 │   ├── components/                    # 通用组件库（阶段二建立，全部消费 theme token）
 │   │   ├── AppButton.kt               # 按钮唯一出口：Filled/Outlined/Text/Danger/Success 变体 + 默认/按下/禁用/加载态
 │   │   ├── AppCard.kt                 # 卡片容器：surface 底 + 可选细描边，不叠阴影，可点击带 ripple
 │   │   ├── AppText.kt                 # 语义文本：AppTitle/AppSectionTitle/AppBodyText/AppCaption/AppFieldLabel（只走 Typography）
 │   │   ├── AppTextField.kt            # 输入框：外观走 token；内核保留原生 EditText（overlay 软键盘硬约束）
 │   │   ├── AppSelection.kt            # AppRadioButtonRow / AppCheckboxRow（整行可点，触控≥48dp）
-│   │   ├── AppSegmentedControl.kt     # 分段单选（连点器/代点器模式切换、弹框动作类型）；圆角用 background(shape) 画，整段矩形可点
+│   │   ├── AppSegmentedControl.kt     # 分段单选（连点器/代点器模式切换、识别方式、动作类型、滑动方向）；圆角用 background(shape) 画，整段矩形可点
 │   │   ├── AppBadge.kt                # 状态徽标：Primary/Success/Warning/Neutral 四色调（权限与运行状态）+ AppPillButton 同尺寸紧凑胶囊按钮
 │   │   ├── AppEmptyState.kt           # 空状态占位（脚本管理空列表）
 │   │   ├── AppScriptList.kt           # 命名脚本列表行（连点器/代点器共用）：点击加载 + 改名 + 删除 + 空状态
@@ -59,9 +59,9 @@ com.hpu.autoclicker
     │   ├── ClickerScript.kt           # ClickerPointData / ClickerScript / ClickerScriptStore（clicker_script_config：scripts / window_alpha / point_alpha + 旧 click_points.json 一次性迁移）
     │   └── ClickerDialogs.kt          # SettingsDialogContent（循环次数 + 脚本列表） + PointSettingsDialogContent（点击点设置） + ClickerInputDialogState
     │
-    └── quickclick/                    # 「代点器」= 新功能（文本匹配 / 图像识别 / 坐标点击）
-        ├── QuickClickService.kt       # 悬浮子按钮服务 + 识别→点击链路 + 坐标点击 + 脚本管理弹框逻辑
-        ├── QuickClickConfig.kt        # QuickClickConfig(含图像/坐标字段) + ImageStore + QuickScript + QuickClickStore
+    └── quickclick/                    # 「代点器」= 新功能（识别方式：文本 / 图像 / 坐标；动作：点击 / 双击 / 长按 / 滑动）
+        ├── QuickClickService.kt       # 悬浮子按钮服务 + 识别→坐标→随机偏移→构造并注入手势 + 脚本管理弹框逻辑
+        ├── QuickClickConfig.kt        # QuickClickConfig(含图像/坐标/动作/偏移字段) + ImageStore + QuickScript + QuickClickStore（含旧脚本动作字段迁移）
         ├── ImageMatcher.kt            # 纯 Kotlin 模板匹配引擎（降采样+灰度NCC滑窗+区域限定+粗扫/精扫）
         ├── RegionSelectView.kt        # 区域选择控件：置灰+网格+框内原图+单指拖动/双指缩放+可选宽高比锁定
         ├── RegionRatioBar.kt          # 裁剪比例条：自由 + 1:1/4:3/3:4/16:9/9:16 + 自定义 W:H（截图/相册共用）
@@ -69,13 +69,13 @@ com.hpu.autoclicker
         ├── CoordinatePickOverlay.kt   # 全屏坐标拾取浮层：置灰+网格+十字线，点击取屏幕绝对坐标，系统返回键退出
         ├── ImagePickActivity.kt       # 相册选图透明中转 Activity（PickVisualMedia + 比例裁剪 + 回传）
         ├── QuickFloatingContent.kt    # 悬浮窗 Compose 内容 + QuickFloatingUiState
-        └── QuickDialogs.kt            # 新建/编辑快捷按钮弹框（动作类型分段开关 + 按类型分组的描边卡片：文本/图像/坐标、模板缩略图、高级参数） + 脚本管理弹框（内容复用 AppScriptList / AppOpacityDialogContent）
+        └── QuickDialogs.kt            # 新建/编辑快捷按钮弹框（识别方式分段开关 + 按类型分组的描边卡片 + 动作类型四段开关与动态参数 + 随机坐标偏移分组） + 脚本管理弹框（内容复用 AppScriptList / AppOpacityDialogContent）
 ```
 
 ## 3. 包职责说明
 
 ### `core.accessibility`
-系统级无障碍服务，两种功能都通过它下发手势。对外暴露静态 `instance`、`performClick`、`performSwipe`、`findTargetByText`，以及 `takeScreenshotAsync` + `isScreenshotSupported()`（图像识别截屏，依赖 API 30+，回调主线程 ARGB Bitmap）。`findTargetByText` 分三层查找：系统 `findAccessibilityNodeInfosByText` 结果二次校验 → 自行遍历节点树兜底 → 文字被拆成多节点时按子树拼接命中；文本比较统一去掉空白并忽略大小写，候选只保留可见节点，优先可点击 / 文字完全相等 / 最深，全部落空时打印窗口包名与可见文字清单（`adb logcat -s ClickService`）。被 `feature/clicker`、`feature/quickclick`、`MainActivity` 依赖。
+系统级无障碍服务，两种功能都通过它下发手势。对外暴露静态 `instance`、`performClick`、`performSwipe`、`dispatchQuickGesture`（代点器通用手势注入：接收已构造好的 `GestureDescription`，用 `onResult` 回传完成/取消/提交失败）、`findTargetByText`，以及 `takeScreenshotAsync` + `isScreenshotSupported()`（图像识别截屏，依赖 API 30+，回调主线程 ARGB Bitmap）。`findTargetByText` 分三层查找：系统 `findAccessibilityNodeInfosByText` 结果二次校验 → 自行遍历节点树兜底 → 文字被拆成多节点时按子树拼接命中；文本比较统一去掉空白并忽略大小写，候选只保留可见节点，优先可点击 / 文字完全相等 / 最深，全部落空时打印窗口包名与可见文字清单（`adb logcat -s ClickService`）。被 `feature/clicker`、`feature/quickclick`、`MainActivity` 依赖。
 
 ### `core.ui`
 悬浮窗 / 服务弹框的通用 UI 基础设施：
@@ -105,7 +105,7 @@ XML 侧 `res/values/colors.xml`（含 values-night）仍服务于主题/状态�
 可拖动、边缘吸附的悬浮主按钮 + 展开操作栏，管理编号点击点与滑动对，按序循环执行点击/滑动/系统按键，支持总循环次数与随机偏移。**点位视觉统一走 `PointMarkerView`**：44dp 圆角方块（14dp 圆角），点击点为品牌青实心渐变 + 白色描边 + 数字外套细白环，滑动起点为实心态、终点为浅底描边态；**滑动通道走 `PipeLineView`**：品牌青半透明轨带 + 实线中线 + 白色 V 形箭头，两端按标记半径留白。**运行中点位保持正常显示**（沿用用户设置的 `point_alpha`，不再压到 30%），手势穿透只靠 `FLAG_NOT_TOUCHABLE`；某个点正在执行时该标记（滑动时含起点 / 终点 / 通道）短暂切到强调色 `OverlayPalette.accent` 强调「这一步已执行」，执行完复原。**运行中展开栏只保留主按钮与停止按钮**（其余按钮在 Compose 内容里直接不渲染，`FloatingServiceUiState.isRunning` 为唯一开关），主按钮仍可展开/折叠。脚本管理迁到「悬浮窗设置」弹框：命名保存（名称 ≤12 字）/ 点击加载（有未保存点位先确认覆盖，加载前先 `stopRunning`）/ 改名 / 删除，列表行与代点器共用 `AppScriptList`；点位与透明度分别存于 `clicker_script_config.xml` 的 `scripts` 与 `window_alpha` / `point_alpha`（与代点器的 `window_alpha` 独立），旧的 `files/click_points.json` 只在首次读取脚本列表时迁移为「默认脚本」一次（`legacy_migrated` 标记）。“隐藏”按钮已移除，由透明度弹框替代：弹框内两根滑块分别控制悬浮窗与点击 / 滑动点位的不透明度，拖动期间弹框隐藏，进行条（`OpacityDragPreview`，20% 不透明度）显示在被拖动滑块的原位置（位置由滑块通过 `onGloballyPositioned` 上报的屏幕矩形决定）。
 
 ### `feature.quickclick`（代点器，新功能）
-折叠/展开/编辑三态悬浮按钮，**启动为仅主按钮的折叠态**，单击主按钮展开/折叠（无子按钮时单击直接进入编辑态）。为子按钮配置「目标文字」（文本匹配）、「模板图片」（图像识别）或「X/Y 坐标」（坐标点击），点击时经无障碍定位或直接按坐标模拟点击；图像识别用 `ImageMatcher` 的纯 Kotlin NCC 匹配、`RegionSelectView`/`RegionCaptureOverlay` 框选模板（支持 `RegionRatioBar` 锁定 1:1 / 4:3 / 16:9 / 自定义等裁剪比例）、`ImagePickActivity` 相册裁剪；坐标点击支持手填坐标或经 `CoordinatePickOverlay` 全屏置灰网格拾取（触摸不会穿透到下层应用）。截图/选图期间悬浮窗与配置弹框整体隐藏（弹框同时置 `FLAG_NOT_TOUCHABLE`），结束后恢复；框选页与取点页不设取消按钮，系统返回键即退出并回到配置弹框，相册裁剪页返回同样回传取消并恢复弹框。支持编辑态单击子按钮打开修改/删除弹框、长按拖动排序、脚本另存为/加载/改名/删除、名称按中英文限长；编辑态的「X」关闭悬浮窗（对比 `savedSnapshot` 判断未保存改动并提示保存，未命名列表先输入脚本名），「透明度」按钮用滑块实时调整 `root.alpha` 并持久化到 `window_alpha`。
+折叠/展开/编辑三态悬浮按钮，**启动为仅主按钮的折叠态**，单击主按钮展开/折叠（无子按钮时单击直接进入编辑态）。为子按钮配置识别方式（「目标文字」文本匹配 / 「模板图片」图像识别 / 「X/Y 坐标」坐标定位）与动作类型（点击 / 双击 / 长按 / 滑动）；执行时识别只产出坐标，随后统一叠加随机偏移并按动作构造手势一次注入（详见「手势注入」约束）。图像识别用 `ImageMatcher` 的纯 Kotlin NCC 匹配、`RegionSelectView`/`RegionCaptureOverlay` 框选模板（支持 `RegionRatioBar` 锁定 1:1 / 4:3 / 16:9 / 自定义等裁剪比例）、`ImagePickActivity` 相册裁剪；坐标点击支持手填坐标或经 `CoordinatePickOverlay` 全屏置灰网格拾取（触摸不会穿透到下层应用）。截图/选图期间悬浮窗与配置弹框整体隐藏（弹框同时置 `FLAG_NOT_TOUCHABLE`），结束后恢复；框选页与取点页不设取消按钮，系统返回键即退出并回到配置弹框，相册裁剪页返回同样回传取消并恢复弹框。支持编辑态单击子按钮打开修改/删除弹框、长按拖动排序、脚本另存为/加载/改名/删除、名称按中英文限长；编辑态的「X」关闭悬浮窗（对比 `savedSnapshot` 判断未保存改动并提示保存，未命名列表先输入脚本名），「透明度」按钮用滑块实时调整 `root.alpha` 并持久化到 `window_alpha`。
 
 ## 4. 依赖方向
 
@@ -131,7 +131,7 @@ feature.main   feature.clicker   feature.quickclick
   - `POST_NOTIFICATIONS`（Android 13+）由 `MainActivity` 运行时申请，拒绝授权不阻断悬浮窗启动，仅通知栏入口不可见。
   - Android 15+ 的 `dataSync` 有 6 小时 / 24 小时上限，系统回调 `Service.onTimeout(startId, fgsType)`，两个服务均已覆写并 `stopSelf(startId)` 优雅停止（不可不处理，否则系统以 `RemoteServiceException` 结束进程）。若需无限时长，可评估 `specialUse` 类型（需额外 `FOREGROUND_SERVICE_SPECIAL_USE` 权限与 `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` 属性，并受应用商店政策约束）。
 - **Service 内弹框**：`TYPE_APPLICATION_OVERLAY` 弹框须 `clearFlags(FLAG_ALT_FOCUSABLE_IM)` 才能弹软键盘；承载 `ComposeView` 的弹框须在 `show()` 前把 `ServiceComposeHost` 挂到窗口 DecorView。**所有 Service 内弹框一律走 `ServiceDialogs.show()`**，不要自己 new `AlertDialog`——统一宿主负责透明窗底、overlay 窗口类型、去平台双层框与宽度。
-- **`ClickPoint`** 作为数据类内联在 `feature/clicker/FloatingWindowService.kt` 末尾；连点器的持久化模型已拆到 `feature/clicker/ClickerScript.kt`（`ClickerPointData` / `ClickerScript` / `ClickerScriptStore`）；**`QuickScript`/`QuickClickStore`** 内联在 `feature/quickclick/QuickClickConfig.kt`。
+- **`ClickPoint`** 作为数据类内联在 `feature/clicker/FloatingWindowService.kt` 末尾；连点器的持久化模型已拆到 `feature/clicker/ClickerScript.kt`（`ClickerPointData` / `ClickerScript` / `ClickerScriptStore`）；**`QuickScript`/`QuickClickStore`** 内联在 `feature/quickclick/QuickClickConfig.kt`；`QuickClickConfig` 现同时承载识别字段、动作字段（`actionType` / `actionParams` 内部的间隔、时长、方向、距离）与随机偏移（`randomOffsetEnabled` / `randomOffsetRadius`），旧脚本在 `loadScripts` 中按缺少 `actionType` 判据补齐并回写一次（幂等）。
 - **UI 硬约束（美化时也不可破坏）**：
   1. overlay 悬浮窗内 Compose 输入框收不到软键盘——`AppTextField` 内核必须保持原生 `EditText`；`ServiceDialogs.show()` 已在 `show()` 后统一 `clearFlags(FLAG_ALT_FOCUSABLE_IM)`，手工搭建的弹框（`showPointSettingsDialog`、`RegionRatioBar` 自定义比例）必须自行清除。
   2. 悬浮窗按钮手势统一在 `RawTouch` 单一链路（`pointerInteropFilter`），禁止混用 `clickable`；两个悬浮窗的按钮一律用 `FloatingSquareButton`，只换图标，不各写一套。脚本列表里的「点击加载 / 改名 / 删除」是弹框内 Compose 内容（非悬浮窗），可正常使用 `Modifier.clickable`。
@@ -144,7 +144,8 @@ feature.main   feature.clicker   feature.quickclick
 - **样式一致性**：页面禁止硬编码颜色/字号/圆角/间距，一律取 `MaterialTheme.colorScheme` / `MaterialTheme.typography` / `MaterialTheme.shapes` / `Dimens`；布局间距优先取 `Dimens` 中的**语义间距**（sectionGap / blockGap / fieldGap / screenVMargin）而非裸数值；例外仅悬浮窗内容的几何 dp（见上）。
 - **图像识别（代点器）**：依赖无障碍 `takeScreenshot`（**仅 Android 11 / API 30+**，低版本入口置灰提示），无障碍配置必须声明 `android:canTakeScreenshot="true"`，否则系统直接拒绝截图。截图前 `hideSelfForScreenshot()` + `hideConfigForCapture()` 隐藏悬浮窗与配置弹框并延迟约 150ms，两者都置 `FLAG_NOT_TOUCHABLE`（弹框另加 `FLAG_NOT_FOCUSABLE`），避免不可见窗口仍吞触摸或抢相册焦点；框选浮层关闭（确定 / 系统返回键取消）后才恢复弹框与悬浮窗。「从相册选」同样先隐藏悬浮窗与弹框再拉起 `ImagePickActivity`，取消、返回、选图完成都经 `pendingResult`（含 `onDestroy` 兜底）恢复。模板匹配在 `matchExecutor` 单线程后台执行（不能放主线程，全屏 NCC 会卡 UI），并用 `matchInProgress` 防止并发截图；模板图与匹配参数存 `QuickClickConfig`，图片文件由 `ImageStore` 管 `filesDir/images/`，删脚本/删按钮/换图/取消编辑均需清理旧文件。`ImagePickActivity` 用 `ComponentActivity`（框架 Activity 无 `registerForActivityResult`），其在 `Button.apply{}` 内引用宿主须用 `this@ImagePickActivity`；`ScreenshotResult`/`TakeScreenshotCallback` 是 `AccessibilityService` 嵌套类，不可 import。
 - **裁剪比例（代点器图像识别）**：`RegionRatioBar` 由截图浮层与相册裁剪页共用，提供 自由 / 1:1 / 4:3 / 3:4 / 16:9 / 9:16 / 自定义 W:H；`RegionSelectView.setAspectRatio(ratio)` 中的比例是**图像像素坐标的宽/高**，切换比例时保持选框面积与中心不变，锁定后 `applyScale` 只等比改变尺寸、拖动只平移。自定义比例弹框在 `Service` 上下文（截图浮层）中需显式 `TYPE_APPLICATION_OVERLAY` 并清除 `FLAG_ALT_FOCUSABLE_IM`，在 `Activity` 上下文（相册裁剪）中走普通弹框；`RegionRatioBar` 内部按 `context is Activity` 自动分流。选中比例不会写入 `QuickClickConfig`，裁剪结果 PNG 本身即为目标比例。
-- **坐标点击（代点器）**：`CoordinatePickOverlay` 是独立的 `TYPE_APPLICATION_OVERLAY` 全屏浮层，**不加** `FLAG_NOT_TOUCHABLE`，触摸由浮层消费，因此点选坐标不会穿透到下层应用；窗口保持可聚焦并在根视图 `dispatchKeyEvent` 拦截 `KEYCODE_BACK`，返回键关闭浮层并恢复配置弹框（无取消按钮）。坐标取 `MotionEvent.rawX/rawY` 屏幕绝对坐标，与 `dispatchGesture` 坐标系一致。拾取期间需隐藏悬浮窗和配置弹框（`decorView.visibility = INVISIBLE` + `FLAG_NOT_TOUCHABLE`），回调后再恢复。
+- **坐标定位（代点器）**：`CoordinatePickOverlay` 是独立的 `TYPE_APPLICATION_OVERLAY` 全屏浮层，**不加** `FLAG_NOT_TOUCHABLE`，触摸由浮层消费，因此点选坐标不会穿透到下层应用；窗口保持可聚焦并在根视图 `dispatchKeyEvent` 拦截 `KEYCODE_BACK`，返回键关闭浮层并恢复配置弹框（无取消按钮）。坐标取 `MotionEvent.rawX/rawY` 屏幕绝对坐标，与 `dispatchGesture` 坐标系一致。拾取期间需隐藏悬浮窗和配置弹框（`decorView.visibility = INVISIBLE` + `FLAG_NOT_TOUCHABLE`），回调后再恢复。
+- **手势注入（代点器）**：识别链路（文本 / 图像 / 坐标）只负责产出坐标，三种识别最终都走 `QuickClickService.performActionAt()`——先 `applyRandomOffset()` 叠加一次随机偏移（每次执行只随机一次；双击两次触摸共用同一坐标，滑动只偏移起点），再 `buildActionGesture()` 构造 `GestureDescription` 交给 `AccessibilityService.dispatchQuickGesture()`：点击/双击用单点 `Path`、按压时长固定 50ms，双击在同一手势内放两条 stroke（startTime 0 与 interval），长按按压时长即动作时长，滑动用 `moveTo`→`lineTo` 直线。所有坐标（含滑动终点）都夹到屏幕内并留 1dp 边距，避免越界导致 `dispatchGesture` 失败；提交失败（服务断连）要提示检查无障碍并置灰主按钮，`onCancelled` 也必须 Toast，不能静默吞掉。新增动作类型只需扩展 `buildActionGesture` 与配置弹框，不要改识别链路。
 
 ## 6. 如何新增一个功能模块
 
