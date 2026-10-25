@@ -75,7 +75,7 @@ com.hpu.autoclicker
 ## 3. 包职责说明
 
 ### `core.accessibility`
-系统级无障碍服务，两种功能都通过它下发手势。对外暴露静态 `instance`、`performClick`、`performSwipe`、`findTargetByText`，以及 `takeScreenshotAsync` + `isScreenshotSupported()`（图像识别截屏，依赖 API 30+，回调主线程 ARGB Bitmap）。被 `feature/clicker`、`feature/quickclick`、`MainActivity` 依赖。
+系统级无障碍服务，两种功能都通过它下发手势。对外暴露静态 `instance`、`performClick`、`performSwipe`、`findTargetByText`，以及 `takeScreenshotAsync` + `isScreenshotSupported()`（图像识别截屏，依赖 API 30+，回调主线程 ARGB Bitmap）。`findTargetByText` 分三层查找：系统 `findAccessibilityNodeInfosByText` 结果二次校验 → 自行遍历节点树兜底 → 文字被拆成多节点时按子树拼接命中；文本比较统一去掉空白并忽略大小写，候选只保留可见节点，优先可点击 / 文字完全相等 / 最深，全部落空时打印窗口包名与可见文字清单（`adb logcat -s ClickService`）。被 `feature/clicker`、`feature/quickclick`、`MainActivity` 依赖。
 
 ### `core.ui`
 悬浮窗 / 服务弹框的通用 UI 基础设施：

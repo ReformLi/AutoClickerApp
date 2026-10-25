@@ -26,6 +26,8 @@ class AutoClickerAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "ClickService"
+        /** 节点树递归上限，防止异常深的树把栈打爆 */
+        private const val MAX_TREE_DEPTH = 60
         // 静态实例，方便悬浮窗控制
         var instance: AutoClickerAccessibilityService? = null
             private set
@@ -45,9 +47,6 @@ class AutoClickerAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         Log.d(TAG, "无障碍服务已连接")
-        // 测试全局返回动作
-        performGlobalAction(GLOBAL_ACTION_BACK)
-        Log.d("ClickService", "执行了全局返回")
     }
 
 
@@ -166,56 +165,151 @@ class AutoClickerAccessibilityService : AccessibilityService() {
 
     /**
      * 文本匹配查找目标：返回目标节点的屏幕中心点坐标，null 表示匹配失败。
-     * 匹配规则（QuickClick 新功能）：
-     * 1. findAccessibilityNodeInfosByText 部分匹配、不区分大小写，返回多结果需二次筛选；
-     * 2. Android 14+ 敏感节点会返回“有壳无字”的节点（节点存在但 text 为空），
-     *    必须校验节点确实包含目标文本，否则判定为匹配失败；
-     * 3. 优先取 isClickable 节点 → 其次最深层且文本精确相等的节点 → 再次第一个有有效边界的节点；
-     * 4. rootInActiveWindow 为 null 时直接判定失败（调用方负责兜底提示）。
+     *
+     * 匹配分三层，逐层放宽（全部按「去掉空白后包含」比较，规避中英文空格/换行差异）：
+     * 1. 系统检索 findAccessibilityNodeInfosByText：一次调用覆盖绝大多数界面，
+     *    但它会混入大量“有壳无字”的父节点（Android 14+ 敏感节点还可能返回空文本），必须二次筛选；
+     * 2. 系统检索没命中时自行遍历整棵节点树：部分界面的文字挂在深层/虚拟节点上，系统接口会漏；
+     * 3. 文字被拆成多个节点时（如「立即」+「抢购」），`contains` 永远命不中，
+     *    改为找「子树文字拼接后包含目标」的最深层可点击节点。
+     * 全部落空时把窗口内可见文字打进日志，便于对照目标文字实际写成了什么。
      */
     fun findTargetByText(targetText: String): PointF? {
-        if (targetText.isBlank()) return null
+        val target = normalizeText(targetText)
+        if (target.isEmpty()) return null
         val root = rootInActiveWindow ?: return null
-        val nodes = try {
-            root.findAccessibilityNodeInfosByText(targetText)
-        } catch (e: Exception) {
-            Log.e(TAG, "文本匹配异常", e)
-            null
-        }
-        if (nodes.isNullOrEmpty()) return null
-
-        // 二次筛选：排除“有壳无字”节点，只保留确实包含目标文本的节点
-        val valid = nodes.filter { n ->
-            n.text?.toString()?.contains(targetText, ignoreCase = true) == true ||
-                n.contentDescription?.toString()?.contains(targetText, ignoreCase = true) == true
-        }
-        if (valid.isEmpty()) return null
-
         val rect = android.graphics.Rect()
         val screen = screenBounds()
 
-        // 1. 优先可点击节点
-        val clickable = valid.filter { it.isClickable }
-        if (clickable.isNotEmpty()) {
-            val n = clickable.firstOrNull { hasValidBounds(it, rect, screen) }
-            if (n != null) return centerOf(n, rect)
+        // 1. 系统检索
+        val fromApi = ArrayList<AccessibilityNodeInfo>()
+        try {
+            root.findAccessibilityNodeInfosByText(targetText.trim())?.forEach { n ->
+                if (nodeMatchesText(n, target)) fromApi.add(n)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "系统文本检索异常", e)
         }
+        pickTarget(fromApi, target, rect, screen)?.let { return it }
 
-        // 2. 最深层且文本精确相等的节点
-        val exact = valid.filter { it.text?.toString()?.equals(targetText, ignoreCase = true) == true }
-        val exactCandidates = if (exact.isNotEmpty()) exact else valid
-        val deepest = exactCandidates
+        // 2. 自行遍历整棵树兜底
+        val walked = ArrayList<AccessibilityNodeInfo>()
+        val grouped = ArrayList<AccessibilityNodeInfo>()
+        walkTextNodes(root, target, walked, grouped, 0)
+        pickTarget(walked, target, rect, screen)?.let { return it }
+
+        // 3. 文字被拆成多个节点：取子树拼接命中的最深层可点击节点
+        val groupCandidates = grouped.filter { hasValidBounds(it, rect, screen) }
+        groupCandidates
             .map { it to nodeDepth(it) }
             .maxByOrNull { it.second }
             ?.first
-        if (deepest != null && hasValidBounds(deepest, rect, screen)) {
-            return centerOf(deepest, rect)
+            ?.let { return centerOf(it, rect) }
+
+        Log.i(TAG, "文本未命中「$targetText」，窗口=${root.packageName}，可见文字=${visibleTexts(root)}")
+        return null
+    }
+
+    /** 从候选节点里挑点击目标：可点击优先 → 文本完全相等 → 最深；均取可见节点 */
+    private fun pickTarget(
+        candidates: List<AccessibilityNodeInfo>,
+        target: String,
+        rect: android.graphics.Rect,
+        screen: android.graphics.Rect,
+    ): PointF? {
+        val visible = candidates.filter { hasValidBounds(it, rect, screen) }
+        if (visible.isEmpty()) return null
+
+        val clickable = visible.filter { it.isClickable }
+        if (clickable.isNotEmpty()) {
+            val exact = clickable.firstOrNull { nodeTextEquals(it, target) }
+            return centerOf(exact ?: clickable.first(), rect)
         }
 
-        // 3. 第一个有有效边界的节点
-        val fallback = valid.firstOrNull { hasValidBounds(it, rect, screen) }
-        if (fallback != null) return centerOf(fallback, rect)
-        return null
+        val exact = visible.filter { nodeTextEquals(it, target) }
+        val pool = if (exact.isNotEmpty()) exact else visible
+        val deepest = pool.map { it to nodeDepth(it) }.maxByOrNull { it.second }?.first
+        return deepest?.let { centerOf(it, rect) }
+    }
+
+    /** 遍历整棵树：收集自身命中文本的节点，以及子树拼接命中的可点击节点 */
+    private fun walkTextNodes(
+        node: AccessibilityNodeInfo,
+        target: String,
+        direct: MutableList<AccessibilityNodeInfo>,
+        grouped: MutableList<AccessibilityNodeInfo>,
+        depth: Int,
+    ) {
+        if (depth > MAX_TREE_DEPTH) return
+        if (nodeMatchesText(node, target)) {
+            direct.add(node)
+        } else if (node.isClickable && subtreeTextContains(node, target)) {
+            grouped.add(node)
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            walkTextNodes(child, target, direct, grouped, depth + 1)
+        }
+    }
+
+    /** 节点自身文字是否包含目标（忽略空白与大小写） */
+    private fun nodeMatchesText(node: AccessibilityNodeInfo, target: String): Boolean {
+        if (target.isEmpty()) return false
+        return normalizeText(node.text?.toString()).contains(target, ignoreCase = true) ||
+            normalizeText(node.contentDescription?.toString()).contains(target, ignoreCase = true)
+    }
+
+    private fun nodeTextEquals(node: AccessibilityNodeInfo, target: String): Boolean {
+        return normalizeText(node.text?.toString()).equals(target, ignoreCase = true) ||
+            normalizeText(node.contentDescription?.toString()).equals(target, ignoreCase = true)
+    }
+
+    /** 去掉所有空白：中文界面常在文字里插空格/换行，逐字比较必然命不中 */
+    private fun normalizeText(raw: String?): String {
+        if (raw.isNullOrEmpty()) return ""
+        val sb = StringBuilder(raw.length)
+        for (c in raw) if (!c.isWhitespace()) sb.append(c)
+        return sb.toString()
+    }
+
+    /** 子树所有文字拼接后是否包含目标（处理文字被拆成多个节点的情况） */
+    private fun subtreeTextContains(node: AccessibilityNodeInfo, target: String): Boolean {
+        val sb = StringBuilder()
+        collectSubtreeText(node, sb, 0)
+        return normalizeText(sb.toString()).contains(target, ignoreCase = true)
+    }
+
+    private fun collectSubtreeText(node: AccessibilityNodeInfo, sb: StringBuilder, depth: Int) {
+        if (depth > MAX_TREE_DEPTH / 2) return
+        node.text?.toString()?.let { if (it.isNotBlank()) sb.append(it) }
+        node.contentDescription?.toString()?.let { if (it.isNotBlank()) sb.append(it) }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectSubtreeText(child, sb, depth + 1)
+        }
+    }
+
+    /** 未命中时导出窗口内可见文字，方便对照目标文字到底写成了什么 */
+    private fun visibleTexts(root: AccessibilityNodeInfo, limit: Int = 40): String {
+        val out = ArrayList<String>()
+        collectVisibleTexts(root, out, limit, 0)
+        return if (out.isEmpty()) "（无任何可读文字，该界面可能不向无障碍暴露文字）"
+        else out.joinToString(" | ")
+    }
+
+    private fun collectVisibleTexts(
+        node: AccessibilityNodeInfo,
+        out: MutableList<String>,
+        limit: Int,
+        depth: Int,
+    ) {
+        if (depth > MAX_TREE_DEPTH || out.size >= limit) return
+        node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { out.add(it) }
+        for (i in 0 until node.childCount) {
+            if (out.size >= limit) return
+            val child = node.getChild(i) ?: continue
+            collectVisibleTexts(child, out, limit, depth + 1)
+        }
     }
 
     /** 节点边界是否有效（非零尺寸且落在屏幕范围内） */
