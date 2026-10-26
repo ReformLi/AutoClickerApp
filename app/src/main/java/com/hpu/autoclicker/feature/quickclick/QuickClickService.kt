@@ -9,10 +9,12 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Point
 import android.graphics.PointF
+import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -44,6 +46,7 @@ import com.hpu.autoclicker.core.components.AppOpacityDialogContent
 import com.hpu.autoclicker.core.components.AppOpacityDialogState
 import com.hpu.autoclicker.core.components.AppTextField
 import com.hpu.autoclicker.core.theme.Dimens
+import com.hpu.autoclicker.core.ui.FloatingWindowBounds
 import com.hpu.autoclicker.core.ui.OpacityDragPreview
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
 import com.hpu.autoclicker.core.ui.ServiceDialogs
@@ -124,9 +127,27 @@ class QuickClickService : Service() {
     private var dragStartRawY = 0f
     private var dragMoved = false        // 长按前超 touchSlop 取消长按计时
     private var dragActive = false       // 长按触发，进入拖动排序
-    private var parentTopOnScreen = 0    // 展开区顶部屏幕绝对坐标
+    private var parentTopOnScreen = 0    // 竖排展开区顶部屏幕绝对坐标
+    private var parentLeftOnScreen = 0   // 横排展开区左侧屏幕绝对坐标
     private var dragIndex = -1           // 正在拖动的子按钮在 configs 中的索引
     private var expandedTopInRoot = 0f   // 展开区在根视图内的 Y 偏移（px），用于换算屏幕坐标
+    private var expandedLeftInRoot = 0f  // 展开区在根视图内的 X 偏移（px），横排排序用
+
+    /** 当前竖排吸附边缘：true = 左侧，false = 右侧。横竖屏切换后按它重新贴边 */
+    private var dockedLeft = true
+
+    /** 当前横排吸附边缘：true = 顶部，false = 底部 */
+    private var dockedTop = true
+
+    /** 当前吸附轴：true = 贴上 / 下边（横排或横屏），false = 贴左 / 右边 */
+    private var dockTopBottom = false
+
+    /** 拖动期间固定的安全区，避免每帧用旧坐标重算原点偏移 */
+    private val dragBounds = Rect()
+
+    /** 上次已知的屏幕尺寸，用来区分「真的横竖屏切换」与深色模式 / 字体变化 */
+    private var lastScreenW = 0
+    private var lastScreenH = 0
 
     // 当前按钮列表来自哪个脚本（从脚本管理加载后记录，保存时预填名称）
     private var currentScriptName: String? = null
@@ -173,7 +194,10 @@ class QuickClickService : Service() {
                     onCloseWindow = { requestCloseWindow() },
                     onChildClick = { cfg -> onChildClicked(cfg) },
                     onChildTouch = { index, event -> onChildTouch(index, event) },
-                    onExpandedPositioned = { top -> expandedTopInRoot = top },
+                    onExpandedPositioned = { left, top ->
+                        expandedLeftInRoot = left
+                        expandedTopInRoot = top
+                    },
                 )
             }
         }
@@ -194,15 +218,27 @@ class QuickClickService : Service() {
 
         // 折叠态高度固定为「8dp 上间距 + 40dp 主按钮 + 8dp 下间距」= 56dp，
         // Compose 内容在 addView 之前无法测量，故用该固定值估算初始居中位置
+        val visible = FloatingWindowBounds.displaySize(windowManager)
         lp.gravity = Gravity.START or Gravity.TOP   // x/y 即屏幕绝对坐标
         lp.x = 0
-        lp.y = (getScreenHeight() - dp(56)) / 2
+        lp.y = (visible.y - dp(56)) / 2
+
+        lastScreenW = getScreenWidth()
+        lastScreenH = getScreenHeight()
+        syncLayoutMode()
 
         try {
             windowManager.addView(root, lp)
             rootAdded = true
         } catch (e: Exception) {
             android.util.Log.e("QuickClick", "addView 失败", e)
+        }
+
+        // 内容尺寸变化（展开 / 折叠 / 进出编辑态 / 增删按钮 / 横竖屏重排）后重新钳制窗口
+        root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+                if (rootAdded) clampWindow()
+            }
         }
 
         startForegroundIfNeeded()
@@ -220,6 +256,24 @@ class QuickClickService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /**
+     * 横竖屏切换 / 分屏尺寸变化时系统不会重建 Service，窗口坐标仍是旧方向的，
+     * 必须按新尺寸重排并钳制，否则悬浮窗会留在屏幕外甚至完全不可见。
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (!rootAdded) return
+        val w = getScreenWidth()
+        val h = getScreenHeight()
+        if (w == lastScreenW && h == lastScreenH) return   // 深色模式 / 字体大小等，窗口几何未变
+        lastScreenW = w
+        lastScreenH = h
+        clampWindow()
+        // 旋转动画期间视图尺寸/位置可能还在过渡，延迟再校一次
+        root.postDelayed({ if (rootAdded) clampWindow() }, 350)
+        warnIfExpandedTooLarge()
+    }
 
     override fun onDestroy() {
         destroyed = true
@@ -263,6 +317,7 @@ class QuickClickService : Service() {
                 downRawY = event.rawY
                 initWindowX = lp.x
                 initWindowY = lp.y
+                dragBounds.set(FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin()))
                 isDragging = false
                 ui.mainPressed = true           // 按下反馈（等价原 bg_floating_button 的 pressed 态）
                 true
@@ -275,9 +330,12 @@ class QuickClickService : Service() {
                     ui.mainPressed = false      // 进入拖动即取消按下反馈
                 }
                 if (isDragging) {
-                    lp.x = initWindowX + dx.toInt()
-                    lp.y = (initWindowY + dy.toInt())
-                        .coerceIn(0, (getScreenHeight() - root.height).coerceAtLeast(0))
+                    lp.x = FloatingWindowBounds.clampInside(
+                        initWindowX + dx.toInt(), root.width, dragBounds.left, dragBounds.right
+                    )
+                    lp.y = FloatingWindowBounds.clampInside(
+                        initWindowY + dy.toInt(), root.height, dragBounds.top, dragBounds.bottom
+                    )
                     try {
                         windowManager.updateViewLayout(root, lp)  // 跟手移动，不重建 View
                     } catch (e: Exception) {
@@ -318,11 +376,23 @@ class QuickClickService : Service() {
         }
     }
 
-    /** 拖动结束：吸附到最近的左/右屏幕边缘 */
+    /**
+     * 松手吸附：长边与吸附边缘平行，另一轴保留松手时的位置。
+     * 横排 / 横屏贴上 / 下边（水平位置不强制），竖排贴左 / 右边。
+     */
     private fun snapToEdge() {
-        val screenW = getScreenWidth()
+        val bounds = FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin())
         val viewW = root.width.coerceAtLeast(root.measuredWidth)
-        lp.x = if (lp.x + viewW / 2 < screenW / 2) 0 else (screenW - viewW).coerceAtLeast(0)
+        val viewH = root.height.coerceAtLeast(root.measuredHeight)
+        if (docksTopBottom()) {
+            dockedTop = lp.y + viewH / 2 < (bounds.top + bounds.bottom) / 2
+            lp.y = if (dockedTop) bounds.top else (bounds.bottom - viewH).coerceAtLeast(bounds.top)
+            lp.x = FloatingWindowBounds.clampInside(lp.x, viewW, bounds.left, bounds.right)
+        } else {
+            dockedLeft = lp.x + viewW / 2 < (bounds.left + bounds.right) / 2
+            lp.x = if (dockedLeft) bounds.left else (bounds.right - viewW).coerceAtLeast(bounds.left)
+            lp.y = FloatingWindowBounds.clampInside(lp.y, viewH, bounds.top, bounds.bottom)
+        }
         try {
             windowManager.updateViewLayout(root, lp)
         } catch (e: Exception) {
@@ -347,12 +417,14 @@ class QuickClickService : Service() {
             return
         }
         ui.isExpanded = true
-        clampWindowY()
+        clampWindow()
+        warnIfExpandedTooLarge()
     }
 
     private fun collapse() {
         ui.isExpanded = false
         ui.isEditing = false   // 折叠即退出编辑态，编辑控件不常驻
+        clampWindow()
     }
 
     private fun enterEditMode() {
@@ -360,7 +432,8 @@ class QuickClickService : Service() {
         ui.isEditing = true
         lastMainTapAt = 0L   // 重置双击计时，避免刚进编辑态的下一次点击被误判为双击
         setMainAvailable(true)
-        clampWindowY()
+        clampWindow()
+        warnIfExpandedTooLarge()
     }
 
     /**
@@ -373,7 +446,7 @@ class QuickClickService : Service() {
         if (configs.isEmpty()) {
             collapse()
         } else {
-            clampWindowY()
+            clampWindow()
         }
     }
 
@@ -537,12 +610,14 @@ class QuickClickService : Service() {
             dragActive = false
             dragIndex = index
             ui.pressedChildIndex = index                                  // 按下反馈
-            // 展开区顶部的屏幕绝对坐标 = 窗口 y + 展开区在根视图内的偏移
+            // 展开区左上角的屏幕绝对坐标 = 窗口偏移 + 展开区在根视图内的偏移
             parentTopOnScreen = lp.y + expandedTopInRoot.toInt()
+            parentLeftOnScreen = lp.x + expandedLeftInRoot.toInt()
             dragStartRunnable = Runnable {
                 dragActive = true
                 ui.draggingConfig = configs.getOrNull(index)               // 拖动中的按钮浮起
                 ui.dragOffsetY = 0f
+                ui.dragOffsetX = 0f
             }.also { dragHandler.postDelayed(it, ViewConfiguration.getLongPressTimeout().toLong()) }
             true
         }
@@ -565,8 +640,9 @@ class QuickClickService : Service() {
             ui.pressedChildIndex = -1
             if (dragActive) {
                 ui.dragOffsetY = 0f
+                ui.dragOffsetX = 0f
                 ui.draggingConfig = null
-                clampWindowY()                     // 落位后校正窗口位置（列表顺序已同步）
+                clampWindow()                      // 落位后校正窗口位置（列表顺序已同步）
             } else if (!dragMoved && event.actionMasked == MotionEvent.ACTION_UP) {
                 // 编辑态点击：打开该子按钮的修改/删除弹框
                 configs.getOrNull(dragIndex)?.let { showConfigDialog(it) }
@@ -580,34 +656,59 @@ class QuickClickService : Service() {
     }
 
     /**
-     * 拖动排序核心：子按钮跟随手指上下移动，中心越过相邻子按钮时交换位置；
-     * 子按钮区间即为 configs 全部元素（UI 上它们始终位于 + 之下）
+     * 拖动排序核心：子按钮跟随手指移动，中心越过相邻子按钮时交换位置。
+     * 竖排看 Y、横排看 X；编辑态展开区最前面是 [+]，所以格子下标要整体后移一格。
      */
     private fun performChildDrag(event: MotionEvent) {
         val idx = dragIndex
         if (idx < 0 || idx >= configs.size) return
 
-        val dy = event.rawY - dragStartRawY
-        ui.dragOffsetY = dy                    // 跟手位移
+        val cellPx = dp(44)                 // 每格占位：40dp 按钮 + 4dp 间距
+        val cellCenter = dp(24)             // 格内容中心 = 4dp 间距 + 20dp 半高
+        val firstChild = if (ui.isEditing) 1 else 0
 
-        val fingerY = event.rawY - parentTopOnScreen   // 手指相对展开区顶部的 Y
-        val rowPx = dp(44)                     // 每行占位：40dp 高度 + 4dp 上间距
-        val rowCenter = dp(24)                 // 行内容中心 = 行顶 + 4dp 间距 + 20dp 半高
+        if (ui.horizontal) {
+            val dx = event.rawX - dragStartRawX
+            ui.dragOffsetX = dx             // 跟手位移
+            ui.dragOffsetY = 0f
+            val fingerX = event.rawX - parentLeftOnScreen   // 手指相对展开区左侧的 X
 
-        if (idx > 0 && fingerY < (idx - 1) * rowPx + rowCenter) {
-            // 越过上一行中心：上移一格，并补偿位移保持视图跟手
-            val item = configs.removeAt(idx)
-            configs.add(idx - 1, item)
-            dragIndex = idx - 1
-            ui.dragOffsetY = dy + rowPx
-            return
-        }
-        if (idx < configs.size - 1 && fingerY > (idx + 1) * rowPx + rowCenter) {
-            // 越过下一行中心：下移一格，并补偿位移保持视图跟手
-            val item = configs.removeAt(idx)
-            configs.add(idx + 1, item)
-            dragIndex = idx + 1
-            ui.dragOffsetY = dy - rowPx
+            if (idx > 0 && fingerX < (firstChild + idx - 1) * cellPx + cellCenter) {
+                // 越过前一格中心：前移一格，并补偿位移保持视图跟手
+                val item = configs.removeAt(idx)
+                configs.add(idx - 1, item)
+                dragIndex = idx - 1
+                ui.dragOffsetX = dx + cellPx
+                return
+            }
+            if (idx < configs.size - 1 && fingerX > (firstChild + idx + 1) * cellPx + cellCenter) {
+                // 越过下一格中心：后移一格
+                val item = configs.removeAt(idx)
+                configs.add(idx + 1, item)
+                dragIndex = idx + 1
+                ui.dragOffsetX = dx - cellPx
+            }
+        } else {
+            val dy = event.rawY - dragStartRawY
+            ui.dragOffsetY = dy             // 跟手位移
+            ui.dragOffsetX = 0f
+            val fingerY = event.rawY - parentTopOnScreen    // 手指相对展开区顶部的 Y
+
+            if (idx > 0 && fingerY < (firstChild + idx - 1) * cellPx + cellCenter) {
+                // 越过上一行中心：上移一格，并补偿位移保持视图跟手
+                val item = configs.removeAt(idx)
+                configs.add(idx - 1, item)
+                dragIndex = idx - 1
+                ui.dragOffsetY = dy + cellPx
+                return
+            }
+            if (idx < configs.size - 1 && fingerY > (firstChild + idx + 1) * cellPx + cellCenter) {
+                // 越过下一行中心：下移一格
+                val item = configs.removeAt(idx)
+                configs.add(idx + 1, item)
+                dragIndex = idx + 1
+                ui.dragOffsetY = dy - cellPx
+            }
         }
     }
 
@@ -1330,7 +1431,7 @@ class QuickClickService : Service() {
         } else {
             // 新按钮插到列表末尾：编辑态视图中即位于 + 之后
             configs.add(newConfig)
-            clampWindowY()
+            clampWindow()
             Toast.makeText(this, "已新建「$name」", Toast.LENGTH_SHORT).show()
         }
         return true
@@ -1361,7 +1462,7 @@ class QuickClickService : Service() {
             if (form.imageFileName.isNotEmpty() && form.imageFileName != oldImage) {
                 ImageStore.deleteImage(this, form.imageFileName)
             }
-            clampWindowY()
+            clampWindow()
             Toast.makeText(this, "已删除「${editTarget.name}」", Toast.LENGTH_SHORT).show()
             parentDialog?.dismiss()
         }
@@ -1494,7 +1595,7 @@ class QuickClickService : Service() {
         configs.addAll(script.configs)
         currentScriptName = script.name
         savedSnapshot = configs.toList()
-        clampWindowY()
+        clampWindow()
         dialog?.dismiss()
         Toast.makeText(this, "已加载脚本「${script.name}」", Toast.LENGTH_SHORT).show()
     }
@@ -1657,21 +1758,76 @@ class QuickClickService : Service() {
         stopSelf(startId)
     }
 
-    /** 展开区在主按钮下方，展开/编辑后校正窗口位置避免超出屏幕底部 */
-    private fun clampWindowY() {
-        // Compose 内容尺寸变化后需等一次布局完成才能拿到新高度，故 post 到下一帧读取
+    /** 展开 / 折叠 / 编辑态变化后：重新决定横排竖排，并按当前吸附轴贴边 + 夹回安全区 */
+    private fun clampWindow() {
+        syncLayoutMode()
+        // Compose 内容尺寸变化后需等一次布局完成才能拿到新宽高，故 post 到下一帧读取
         root.post {
             if (!rootAdded) return@post
-            val maxY = (getScreenHeight() - root.height).coerceAtLeast(0)
-            val newY = lp.y.coerceIn(0, maxY)
-            if (newY != lp.y) {
-                lp.y = newY
-                try {
-                    windowManager.updateViewLayout(root, lp)
-                } catch (e: Exception) {
-                    android.util.Log.e("QuickClick", "clampWindowY 失败", e)
+            val bounds = FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin())
+            if (docksTopBottom()) {
+                lp.y = if (dockedTop) {
+                    bounds.top
+                } else {
+                    (bounds.bottom - root.height).coerceAtLeast(bounds.top)
                 }
+                lp.x = FloatingWindowBounds.clampInside(lp.x, root.width, bounds.left, bounds.right)
+            } else {
+                lp.x = if (dockedLeft) bounds.left else (bounds.right - root.width).coerceAtLeast(bounds.left)
+                lp.y = FloatingWindowBounds.clampInside(lp.y, root.height, bounds.top, bounds.bottom)
             }
+            try {
+                windowManager.updateViewLayout(root, lp)
+            } catch (e: Exception) {
+                android.util.Log.e("QuickClick", "clampWindow 失败", e)
+            }
+        }
+    }
+
+    /** 竖排放不下时改用横向展开栏：横排长度相同，但占用的是更充裕的屏幕宽度 */
+    private fun syncLayoutMode() {
+        ui.horizontal = shouldUseHorizontalLayout(currentExpandedRows())
+        val topBottom = docksTopBottom()
+        if (topBottom != dockTopBottom) {
+            // 换吸附轴（进入横排 / 转横屏 / 转回竖屏）：按窗口左上角所在的半区选最近的那条边。
+            // 不用宽高算中心——旋转瞬间拿到的还是旧方向的视口尺寸。
+            val bounds = FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin())
+            if (topBottom) {
+                dockedTop = lp.y < (bounds.top + bounds.bottom) / 2
+            } else {
+                dockedLeft = lp.x < (bounds.left + bounds.right) / 2
+            }
+            dockTopBottom = topBottom
+        }
+    }
+
+    /** 横屏或横排时按钮条长边是水平的，吸附上下边；否则（竖排、竖屏折叠）贴左右边 */
+    private fun docksTopBottom(): Boolean =
+        ui.horizontal || resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    private fun edgeMargin(): Int = dp(12)
+
+    private fun currentExpandedRows(): Int {
+        if (!ui.isExpanded) return 0
+        // 编辑态展开区还有 [+]/[脚本管理]/[透明度]/[关闭] 四格
+        return configs.size + if (ui.isEditing) 4 else 0
+    }
+
+    private fun shouldUseHorizontalLayout(rows: Int): Boolean {
+        if (rows <= 0) return false
+        val length = dp(56 + rows * 44)   // 主按钮 40dp + 上下各 8dp 内边距 + 每格 40dp 按钮与 4dp 间距
+        val size = FloatingWindowBounds.usableSize(windowManager, root, lp)
+        return length > size.y && length <= size.x
+    }
+
+    /** 横竖都放不下（按钮特别多）时明确提示，而不是让尾部按钮悄悄跑出屏幕 */
+    private fun warnIfExpandedTooLarge() {
+        val rows = currentExpandedRows()
+        if (rows <= 0) return
+        val length = dp(56 + rows * 44)
+        val size = FloatingWindowBounds.usableSize(windowManager, root, lp)
+        if (length > size.x && length > size.y) {
+            Toast.makeText(this, "当前屏幕放不下全部按钮，请旋转设备或减少按钮数量", Toast.LENGTH_SHORT).show()
         }
     }
 

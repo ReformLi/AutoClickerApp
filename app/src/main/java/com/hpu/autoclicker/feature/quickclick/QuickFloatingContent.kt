@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -68,6 +69,15 @@ class QuickFloatingUiState {
     /** 拖动中的纵向位移（px），用于跟手 */
     var dragOffsetY by mutableStateOf(0f)
 
+    /** 拖动中的横向位移（px）；横排展开栏排序时使用 */
+    var dragOffsetX by mutableStateOf(0f)
+
+    /**
+     * 展开栏方向：false = 主按钮下方竖排，true = 主按钮右侧横排。
+     * 竖排在当前屏幕高度放不下时由 Service 切到横排（横屏 / 小窗口场景）。
+     */
+    var horizontal by mutableStateOf(false)
+
     /** 展开区子按钮列表（原 Service 中内存态 configs） */
     val configs = mutableStateListOf<QuickClickConfig>()
 }
@@ -84,81 +94,181 @@ fun QuickFloatingContent(
     onChildClick: (QuickClickConfig) -> Unit,
     /** 编辑态子按钮原始触摸事件（长按拖动排序） */
     onChildTouch: (index: Int, event: MotionEvent) -> Boolean,
-    /** 展开区在根视图中的 Y 偏移（px），用于拖动排序时换算屏幕坐标 */
-    onExpandedPositioned: (Float) -> Unit,
+    /** 展开区在根视图中的位置（px），用于拖动排序时换算屏幕坐标 */
+    onExpandedPositioned: (left: Float, top: Float) -> Unit,
 ) {
-    val scheme = MaterialTheme.colorScheme
-    Column(
-        // 宽度改为「随内容自适应」：按钮统一收窄到 40dp 后，若窗口仍固定 120dp，
-        // 吸附屏幕边缘时按钮会因水平居中而在窗口内留下约 40dp 透明间隙，看起来就不贴边了。
-        // 随内容收缩后，窗口宽度 ≈ 40dp + 左右各 8dp 内边距，吸附时按钮紧贴边缘。
-        modifier = Modifier
-            .background(Color.Transparent)
-            .padding(8.dp),
-    ) {
-        // 主悬浮总按钮（40dp 品牌底圆角方块 + 白色图标，与连点器悬浮窗同一套样式）
-        FloatingSquareButton(
+    if (state.horizontal) {
+        Row(
             modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .graphicsLayer { alpha = state.mainAlpha }
-                .pointerInteropFilter { onMainTouch(it) },
-            pressed = state.mainPressed,
+                .background(Color.Transparent)
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Image(
-                painter = painterResource(R.drawable.ic_main),
-                contentDescription = "主按钮",
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(8.dp),
-                // 深色模式下主按钮底为浅青，着 onPrimary 保证图标对比度
-                colorFilter = ColorFilter.tint(scheme.onPrimary),
-            )
-        }
-
-        // 展开区：非编辑态仅子按钮列表；编辑态为 [+] 子按钮列表 [脚本管理][透明度][关闭]
-        if (state.isExpanded) {
-            Column(
-                // 注意：这里不能加 fillMaxWidth()。悬浮窗是 WRAP_CONTENT，fillMaxWidth 会解析为
-                // 父约束的最大宽度（≈屏幕宽度），把整个窗口撑成全屏宽，按钮看起来就「只能居中」、
-                // 且 lp.x 被压成 0 无法贴边。去掉后窗口宽度 = 40dp 内容 + 左右各 8dp 内边距 = 56dp。
-                modifier = Modifier
-                    .onGloballyPositioned { onExpandedPositioned(it.positionInRoot().y) },
-                // 展开区按钮统一 40dp 见方并水平居中（与主按钮同宽）
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                if (state.isEditing) {
-                    ControlRow(iconRes = R.drawable.ic_add, desc = "添加", onClick = onAdd)
-                }
-                state.configs.forEachIndexed { index, cfg ->
-                    ChildRow(
-                        cfg = cfg,
-                        editing = state.isEditing,
-                        pressed = state.pressedChildIndex == index,
-                        dragging = state.draggingConfig === cfg,
-                        dragOffsetY = if (state.draggingConfig === cfg) state.dragOffsetY else 0f,
-                        onClick = { onChildClick(cfg) },
-                        onTouch = { event -> onChildTouch(index, event) },
+            QuickMainButton(state = state, onMainTouch = onMainTouch)
+            if (state.isExpanded) {
+                Row(
+                    modifier = Modifier.onGloballyPositioned {
+                        val pos = it.positionInRoot()
+                        onExpandedPositioned(pos.x, pos.y)
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ExpandedItems(
+                        state = state,
+                        onAdd = onAdd,
+                        onOpenSettings = onOpenSettings,
+                        onOpenOpacity = onOpenOpacity,
+                        onCloseWindow = onCloseWindow,
+                        onChildClick = onChildClick,
+                        onChildTouch = onChildTouch,
+                        horizontal = true,
                     )
                 }
-                if (state.isEditing) {
-                    ControlRow(iconRes = R.drawable.ic_folder, desc = "脚本管理", onClick = onOpenSettings)
-                    ControlRow(iconRes = R.drawable.ic_opacity, desc = "透明度", onClick = onOpenOpacity)
-                    ControlRow(iconRes = R.drawable.ic_exit, desc = "关闭", onClick = onCloseWindow)
+            }
+        }
+    } else {
+        Column(
+            // 宽度改为「随内容自适应」：按钮统一收窄到 40dp 后，若窗口仍固定 120dp，
+            // 吸附屏幕边缘时按钮会因水平居中而在窗口内留下约 40dp 透明间隙，看起来就不贴边了。
+            // 随内容收缩后，窗口宽度 ≈ 40dp + 左右各 8dp 内边距，吸附时按钮紧贴边缘。
+            modifier = Modifier
+                .background(Color.Transparent)
+                .padding(8.dp),
+        ) {
+            // 主悬浮总按钮（40dp 品牌底圆角方块 + 白色图标，与连点器悬浮窗同一套样式）
+            QuickMainButton(
+                state = state,
+                onMainTouch = onMainTouch,
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+            )
+
+            // 展开区：非编辑态仅子按钮列表；编辑态为 [+] 子按钮列表 [脚本管理][透明度][关闭]
+            if (state.isExpanded) {
+                Column(
+                    // 注意：这里不能加 fillMaxWidth()。悬浮窗是 WRAP_CONTENT，fillMaxWidth 会解析为
+                    // 父约束的最大宽度（≈屏幕宽度），把整个窗口撑成全屏宽，按钮看起来就「只能居中」、
+                    // 且 lp.x 被压成 0 无法贴边。去掉后窗口宽度 = 40dp 内容 + 左右各 8dp 内边距 = 56dp。
+                    modifier = Modifier.onGloballyPositioned {
+                        val pos = it.positionInRoot()
+                        onExpandedPositioned(pos.x, pos.y)
+                    },
+                    // 展开区按钮统一 40dp 见方并水平居中（与主按钮同宽）
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    ExpandedItems(
+                        state = state,
+                        onAdd = onAdd,
+                        onOpenSettings = onOpenSettings,
+                        onOpenOpacity = onOpenOpacity,
+                        onCloseWindow = onCloseWindow,
+                        onChildClick = onChildClick,
+                        onChildTouch = onChildTouch,
+                        horizontal = false,
+                    )
                 }
             }
         }
     }
 }
 
+/** 主悬浮总按钮：横排 / 竖排两种布局共用 */
+@Composable
+private fun QuickMainButton(
+    state: QuickFloatingUiState,
+    onMainTouch: (MotionEvent) -> Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val scheme = MaterialTheme.colorScheme
+    FloatingSquareButton(
+        modifier = modifier
+            .graphicsLayer { alpha = state.mainAlpha }
+            .pointerInteropFilter { onMainTouch(it) },
+        pressed = state.mainPressed,
+    ) {
+        Image(
+            painter = painterResource(R.drawable.ic_main),
+            contentDescription = "主按钮",
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp),
+            // 深色模式下主按钮底为浅青，着 onPrimary 保证图标对比度
+            colorFilter = ColorFilter.tint(scheme.onPrimary),
+        )
+    }
+}
+
+/**
+ * 展开区内容。调用方决定外层是 Column 还是 Row：
+ * 直接往当前布局里依次发出各个按钮，因此横排 / 竖排共用同一份按钮定义。
+ */
+@Composable
+private fun ExpandedItems(
+    state: QuickFloatingUiState,
+    onAdd: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenOpacity: () -> Unit,
+    onCloseWindow: () -> Unit,
+    onChildClick: (QuickClickConfig) -> Unit,
+    onChildTouch: (index: Int, event: MotionEvent) -> Boolean,
+    horizontal: Boolean,
+) {
+    if (state.isEditing) {
+        ControlRow(
+            iconRes = R.drawable.ic_add,
+            desc = "添加",
+            onClick = onAdd,
+            horizontal = horizontal,
+        )
+    }
+    state.configs.forEachIndexed { index, cfg ->
+        ChildRow(
+            cfg = cfg,
+            editing = state.isEditing,
+            pressed = state.pressedChildIndex == index,
+            dragging = state.draggingConfig === cfg,
+            dragOffsetX = if (state.draggingConfig === cfg) state.dragOffsetX else 0f,
+            dragOffsetY = if (state.draggingConfig === cfg) state.dragOffsetY else 0f,
+            onClick = { onChildClick(cfg) },
+            onTouch = { event -> onChildTouch(index, event) },
+            horizontal = horizontal,
+        )
+    }
+    if (state.isEditing) {
+        ControlRow(
+            iconRes = R.drawable.ic_folder,
+            desc = "脚本管理",
+            onClick = onOpenSettings,
+            horizontal = horizontal,
+        )
+        ControlRow(
+            iconRes = R.drawable.ic_opacity,
+            desc = "透明度",
+            onClick = onOpenOpacity,
+            horizontal = horizontal,
+        )
+        ControlRow(
+            iconRes = R.drawable.ic_exit,
+            desc = "关闭",
+            onClick = onCloseWindow,
+            horizontal = horizontal,
+        )
+    }
+}
+
 /** 编辑态控制行：[+]/[脚本管理]/[透明度]/[关闭]（对应原 buildControlRow） */
 @Composable
-private fun ControlRow(iconRes: Int, desc: String, onClick: () -> Unit) {
+private fun ControlRow(
+    iconRes: Int,
+    desc: String,
+    onClick: () -> Unit,
+    horizontal: Boolean,
+) {
     val scheme = MaterialTheme.colorScheme
     // 与主按钮同一条原始触摸链路（不使用 clickable，避免两条事件链路互相吞事件）
     val tap = rememberRawTapDetector()
     FloatingSquareButton(
         modifier = Modifier
-            .padding(top = 4.dp)
+            .padding(start = if (horizontal) 4.dp else 0.dp, top = if (horizontal) 0.dp else 4.dp)
             .pointerInteropFilter { event -> tap.onEvent(event, onTap = onClick) },
         pressed = tap.isPressed,
     ) {
@@ -180,17 +290,19 @@ private fun ChildRow(
     editing: Boolean,
     pressed: Boolean,
     dragging: Boolean,
+    dragOffsetX: Float,
     dragOffsetY: Float,
     onClick: () -> Unit,
     onTouch: (MotionEvent) -> Boolean,
+    horizontal: Boolean,
 ) {
     val scheme = MaterialTheme.colorScheme
     // 非编辑态用同一套原始触摸判定做点击；编辑态交给 Service 的长按拖动状态机
     val tap = rememberRawTapDetector()
     FloatingSquareButton(
         modifier = Modifier
-            .padding(top = 4.dp)
-            .offset { IntOffset(x = 0, y = dragOffsetY.roundToInt()) }
+            .padding(start = if (horizontal) 4.dp else 0.dp, top = if (horizontal) 0.dp else 4.dp)
+            .offset { IntOffset(x = dragOffsetX.roundToInt(), y = dragOffsetY.roundToInt()) }
             .pointerInteropFilter { event ->
                 if (editing) onTouch(event)
                 else tap.onEvent(event, onTap = onClick)

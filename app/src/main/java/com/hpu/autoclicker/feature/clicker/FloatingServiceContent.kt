@@ -5,6 +5,7 @@ import android.view.MotionEvent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
@@ -49,6 +50,12 @@ class FloatingServiceUiState {
     /** 主按钮按下态（等价原 bg_floating_button 的 pressed 态） */
     var mainPressed by mutableStateOf(false)
 
+    /**
+     * 展开栏方向：false = 主按钮下方竖排，true = 主按钮右侧横排。
+     * 竖排在当前屏幕高度放不下时由 Service 切到横排（横屏 / 小窗口场景）。
+     */
+    var horizontal by mutableStateOf(false)
+
     /** 添加 / 滑动 / 减少 / 设置 / 透明度 / 退出：运行中不显示 */
     val editEnabled: Boolean get() = !isRunning
 }
@@ -70,87 +77,71 @@ fun FloatingServiceContent(
     /** 上报停止按钮在窗口内的位置（运行期只有它与主按钮可点） */
     onStopBounds: (Rect) -> Unit,
 ) {
-    val scheme = MaterialTheme.colorScheme
-    Column(
-        // 宽度改为「随内容自适应」：按钮统一收窄到 40dp 后，若窗口仍固定 120dp，
-        // 吸附屏幕边缘时按钮会因水平居中而在窗口内留下约 40dp 透明间隙，看起来就不贴边了。
-        // 随内容收缩后，窗口宽度 ≈ 40dp + 左右各 8dp 内边距，吸附时按钮紧贴边缘。
-        modifier = Modifier
-            .background(Color.Transparent)
-            .padding(8.dp),
-    ) {
-        // 主悬浮按钮（40dp 品牌底圆角方块 + 白色图标，与代点器悬浮窗同一套样式）
-        FloatingSquareButton(
+    if (state.horizontal) {
+        Row(
             modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .onGloballyPositioned { onMainBounds(it.boundsInWindow().toRect()) }
-                .pointerInteropFilter { onMainTouch(it) },
-            pressed = state.mainPressed,
+                .background(Color.Transparent)
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Image(
-                painter = painterResource(R.drawable.ic_main),
-                contentDescription = "主按钮",
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(8.dp),
-                // 图标 drawable 是白色填充；深色模式下主按钮底为浅青，着 onPrimary 保证对比度
-                colorFilter = ColorFilter.tint(scheme.onPrimary),
+            MainButton(
+                state = state,
+                onMainTouch = onMainTouch,
+                onMainBounds = onMainBounds,
             )
+            if (state.isExpanded) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ActionButtons(
+                        state = state,
+                        onStart = onStart,
+                        onAdd = onAdd,
+                        onSlide = onSlide,
+                        onReduce = onReduce,
+                        onSettings = onSettings,
+                        onOpacity = onOpacity,
+                        onExit = onExit,
+                        onStopBounds = onStopBounds,
+                        horizontal = true,
+                    )
+                }
+            }
         }
+    } else {
+        Column(
+            // 宽度随内容自适应：按钮统一收窄到 40dp 后，窗口宽度 ≈ 40dp + 左右各 8dp 内边距，
+            // 吸附屏幕边缘时按钮紧贴边缘。
+            modifier = Modifier
+                .background(Color.Transparent)
+                .padding(8.dp),
+        ) {
+            // 主悬浮按钮（40dp 品牌底圆角方块 + 白色图标，与代点器悬浮窗同一套样式）
+            MainButton(
+                state = state,
+                onMainTouch = onMainTouch,
+                onMainBounds = onMainBounds,
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+            )
 
-        // 展开的操作栏：启动 / 添加 / 滑动 / 减少 / 设置 / 透明度 / 退出。
-        // 运行中只保留「停止」一个按钮，其余全部隐藏（主按钮仍可展开或折叠）。
-        if (state.isExpanded) {
-            Column(
-                // 注意：这里不能加 fillMaxWidth()。悬浮窗是 WRAP_CONTENT，fillMaxWidth 会解析为
-                // 父约束的最大宽度（≈屏幕宽度），把整个窗口撑成全屏宽，按钮看起来就「只能居中」、
-                // 且 lp.x 被压成 0 无法贴边。去掉后窗口宽度 = 40dp 内容 + 左右各 8dp 内边距 = 56dp。
-                // 操作栏按钮统一 40dp 见方并水平居中（与主按钮同宽）
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                FloatingIconRow(
-                    iconRes = if (state.isRunning) R.drawable.ic_stop else R.drawable.ic_play,
-                    desc = if (state.isRunning) "停止" else "启动",
-                    enabled = true,
-                    onClick = onStart,
-                    onBounds = if (state.isRunning) onStopBounds else null,
-                )
-                if (!state.isRunning) {
-                    FloatingIconRow(
-                        iconRes = R.drawable.ic_add,
-                        desc = "添加",
-                        enabled = state.editEnabled,
-                        onClick = onAdd,
-                    )
-                    FloatingIconRow(
-                        iconRes = R.drawable.ic_slide,
-                        desc = "滑动",
-                        enabled = state.editEnabled,
-                        onClick = onSlide,
-                    )
-                    FloatingIconRow(
-                        iconRes = R.drawable.ic_remove,
-                        desc = "减少",
-                        enabled = state.editEnabled,
-                        onClick = onReduce,
-                    )
-                    FloatingIconRow(
-                        iconRes = R.drawable.ic_settings,
-                        desc = "设置",
-                        enabled = state.editEnabled,
-                        onClick = onSettings,
-                    )
-                    FloatingIconRow(
-                        iconRes = R.drawable.ic_opacity,
-                        desc = "透明度",
-                        enabled = state.editEnabled,
-                        onClick = onOpacity,
-                    )
-                    FloatingIconRow(
-                        iconRes = R.drawable.ic_exit,
-                        desc = "退出",
-                        enabled = state.editEnabled,
-                        onClick = onExit,
+            // 展开的操作栏：启动 / 添加 / 滑动 / 减少 / 设置 / 透明度 / 退出。
+            // 运行中只保留「停止」一个按钮，其余全部隐藏（主按钮仍可展开或折叠）。
+            if (state.isExpanded) {
+                Column(
+                    // 注意：这里不能加 fillMaxWidth()。悬浮窗是 WRAP_CONTENT，fillMaxWidth 会解析为
+                    // 父约束的最大宽度（≈屏幕宽度），把整个窗口撑成全屏宽，按钮看起来就「只能居中」、
+                    // 且 lp.x 被压成 0 无法贴边。去掉后窗口宽度 = 40dp 内容 + 左右各 8dp 内边距 = 56dp。
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    ActionButtons(
+                        state = state,
+                        onStart = onStart,
+                        onAdd = onAdd,
+                        onSlide = onSlide,
+                        onReduce = onReduce,
+                        onSettings = onSettings,
+                        onOpacity = onOpacity,
+                        onExit = onExit,
+                        onStopBounds = onStopBounds,
+                        horizontal = false,
                     )
                 }
             }
@@ -158,7 +149,105 @@ fun FloatingServiceContent(
     }
 }
 
-/** 操作栏图标行：40dp 见方、12dp 圆角、4dp 上间距（对应原 7 个 ImageView） */
+/** 主按钮：横排 / 竖排两种布局共用 */
+@Composable
+private fun MainButton(
+    state: FloatingServiceUiState,
+    onMainTouch: (MotionEvent) -> Boolean,
+    onMainBounds: (Rect) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scheme = MaterialTheme.colorScheme
+    FloatingSquareButton(
+        modifier = modifier
+            .onGloballyPositioned { onMainBounds(it.boundsInWindow().toRect()) }
+            .pointerInteropFilter { onMainTouch(it) },
+        pressed = state.mainPressed,
+    ) {
+        Image(
+            painter = painterResource(R.drawable.ic_main),
+            contentDescription = "主按钮",
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp),
+            // 图标 drawable 是白色填充；深色模式下主按钮底为浅青，着 onPrimary 保证对比度
+            colorFilter = ColorFilter.tint(scheme.onPrimary),
+        )
+    }
+}
+
+/**
+ * 展开栏按钮。调用方决定外层是 Column 还是 Row：
+ * 直接往当前布局里依次发出各个按钮，因此横排 / 竖排共用同一份按钮定义。
+ */
+@Composable
+private fun ActionButtons(
+    state: FloatingServiceUiState,
+    onStart: () -> Unit,
+    onAdd: () -> Unit,
+    onSlide: () -> Unit,
+    onReduce: () -> Unit,
+    onSettings: () -> Unit,
+    onOpacity: () -> Unit,
+    onExit: () -> Unit,
+    onStopBounds: (Rect) -> Unit,
+    horizontal: Boolean,
+) {
+    FloatingIconRow(
+        iconRes = if (state.isRunning) R.drawable.ic_stop else R.drawable.ic_play,
+        desc = if (state.isRunning) "停止" else "启动",
+        enabled = true,
+        onClick = onStart,
+        onBounds = if (state.isRunning) onStopBounds else null,
+        horizontal = horizontal,
+    )
+    if (!state.isRunning) {
+        FloatingIconRow(
+            iconRes = R.drawable.ic_add,
+            desc = "添加",
+            enabled = state.editEnabled,
+            onClick = onAdd,
+            horizontal = horizontal,
+        )
+        FloatingIconRow(
+            iconRes = R.drawable.ic_slide,
+            desc = "滑动",
+            enabled = state.editEnabled,
+            onClick = onSlide,
+            horizontal = horizontal,
+        )
+        FloatingIconRow(
+            iconRes = R.drawable.ic_remove,
+            desc = "减少",
+            enabled = state.editEnabled,
+            onClick = onReduce,
+            horizontal = horizontal,
+        )
+        FloatingIconRow(
+            iconRes = R.drawable.ic_settings,
+            desc = "设置",
+            enabled = state.editEnabled,
+            onClick = onSettings,
+            horizontal = horizontal,
+        )
+        FloatingIconRow(
+            iconRes = R.drawable.ic_opacity,
+            desc = "透明度",
+            enabled = state.editEnabled,
+            onClick = onOpacity,
+            horizontal = horizontal,
+        )
+        FloatingIconRow(
+            iconRes = R.drawable.ic_exit,
+            desc = "退出",
+            enabled = state.editEnabled,
+            onClick = onExit,
+            horizontal = horizontal,
+        )
+    }
+}
+
+/** 操作栏图标行：40dp 见方、12dp 圆角；竖排 4dp 上间距 / 横排 4dp 左间距 */
 @Composable
 private fun FloatingIconRow(
     iconRes: Int,
@@ -166,13 +255,14 @@ private fun FloatingIconRow(
     enabled: Boolean,
     onClick: () -> Unit,
     onBounds: ((Rect) -> Unit)? = null,
+    horizontal: Boolean,
 ) {
     val scheme = MaterialTheme.colorScheme
     // 与主按钮同一条原始触摸链路（不使用 clickable，避免两条事件链路互相吞事件）
     val tap = rememberRawTapDetector()
     FloatingSquareButton(
         modifier = Modifier
-            .padding(top = 4.dp)
+            .padding(start = if (horizontal) 4.dp else 0.dp, top = if (horizontal) 0.dp else 4.dp)
             .then(
                 if (onBounds != null) {
                     Modifier.onGloballyPositioned { onBounds(it.boundsInWindow().toRect()) }

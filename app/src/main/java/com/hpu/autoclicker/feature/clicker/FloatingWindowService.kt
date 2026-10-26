@@ -11,6 +11,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
@@ -39,6 +40,7 @@ import com.hpu.autoclicker.core.components.AppFieldLabel
 import com.hpu.autoclicker.core.components.AppOpacityDialogContent
 import com.hpu.autoclicker.core.components.AppOpacityDialogState
 import com.hpu.autoclicker.core.components.AppTextField
+import com.hpu.autoclicker.core.ui.FloatingWindowBounds
 import com.hpu.autoclicker.core.ui.OpacityDragPreview
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
 import com.hpu.autoclicker.core.ui.ServiceDialogs
@@ -89,8 +91,21 @@ class FloatingWindowService : Service() {
     // 是否正在拖动（用于区分点击和拖动）
     private var isDragging = false
 
-    // 当前吸附边缘标记：true = 左侧，false = 右侧
+    // 当前竖排吸附边缘：true = 左侧，false = 右侧
     private var isDockedLeft = true
+
+    // 当前横排吸附边缘：true = 顶部，false = 底部
+    private var isDockedTop = true
+
+    // 当前吸附轴：true = 贴上 / 下边（横排或横屏），false = 贴左 / 右边
+    private var dockTopBottom = false
+
+    // 拖动期间固定的安全区，避免每帧用旧坐标重算原点偏移
+    private val dragBounds = Rect()
+
+    /** 上次已知的可见区域尺寸，用来区分「真的横竖屏切换」与深色模式 / 字体变化 */
+    private var lastScreenW = 0
+    private var lastScreenH = 0
 
 
     private var pointCount = 0                   // 当前编号计数
@@ -176,13 +191,17 @@ class FloatingWindowService : Service() {
 
         // Compose 内容在 addView 之前无法测量，折叠态高度固定为「8dp 间距 + 40dp 主按钮 + 8dp 间距」= 56dp，
         // 用它估算初始居中位置（后续布局完成后再由 toggleExpanded/snapToEdge 校正）
-        val h = (56 * resources.displayMetrics.density).toInt()
+        val h = dp(56)
         Log.d("FloatingWindow", "初始高度估算：高=$h")
 
         // 设置初始位置：左侧吸附，垂直居中
         layoutParams.gravity = Gravity.START or Gravity.TOP  // 以屏幕左上角为原点
         layoutParams.x = 0
         layoutParams.y = (getScreenHeight() - h) / 2
+
+        lastScreenW = getScreenWidth()
+        lastScreenH = getScreenHeight()
+        syncLayoutMode()
 
         // 恢复用户上次保存的悬浮窗透明度（与代点器各存各的，互不干扰）
         rootView.alpha = ClickerScriptStore.getWindowAlpha(this)
@@ -194,6 +213,15 @@ class FloatingWindowService : Service() {
             Log.d("FloatingWindow", "addView 成功")
         } catch (e: Exception) {
             Log.e("FloatingWindow", "addView 失败", e)
+        }
+
+        // 内容尺寸变化（展开 / 折叠、横竖屏重排、运行态切换）后重新把窗口放回屏幕内；
+        // 只在尺寸真的变化时处理，避免无色值等普通重组反复钳制。
+        rootView.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+                syncLayoutMode()
+                rootView.post { if (::rootView.isInitialized) clampMainWindow() }
+            }
         }
 
         // 开启前台服务，防止系统杀死后台 Service（需要 FOREGROUND_SERVICE 权限）
@@ -220,24 +248,118 @@ class FloatingWindowService : Service() {
     private val configReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_CONFIGURATION_CHANGED) {
-                clampAllWindowsToScreen()
+                handleScreenSizeChanged()
             }
         }
     }
-    private fun clampAllWindowsToScreen() {
-        val newW = getScreenWidth()
-        val newH = getScreenHeight()
 
+    /**
+     * 横竖屏切换 / 分屏尺寸变化时系统不会重建 Service，窗口坐标仍是旧方向的，
+     * 必须自己按新尺寸重排并钳制，否则悬浮窗会留在屏幕外甚至完全不可见。
+     * 这里用 Service 的 ComponentCallbacks 回调，广播作为部分 ROM 的兜底，二者都做尺寸去重。
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        handleScreenSizeChanged()
+    }
+
+    private fun handleScreenSizeChanged() {
+        if (!::rootView.isInitialized || !::layoutParams.isInitialized) return
+        val w = getScreenWidth()
+        val h = getScreenHeight()
+        if (w == lastScreenW && h == lastScreenH) return   // 深色模式 / 字体大小等，窗口几何未变
+        lastScreenW = w
+        lastScreenH = h
+        syncLayoutMode()
+        // 等 Compose 按新尺寸重排后再钳制，否则读到的还是旧方向的宽高
+        rootView.post { if (::rootView.isInitialized) clampAllWindowsToScreen() }
+        // 旋转动画期间视图尺寸/位置可能还在过渡，延迟再校一次
+        rootView.postDelayed({
+            if (::rootView.isInitialized) {
+                syncLayoutMode()
+                clampAllWindowsToScreen()
+            }
+        }, 350)
+    }
+
+    /** 竖排放不下时改用横向展开栏：横排长度相同，但占用的是更充裕的屏幕宽度 */
+    private fun syncLayoutMode() {
+        if (!::rootView.isInitialized || !::layoutParams.isInitialized) return
+        ui.horizontal = shouldUseHorizontalLayout(currentExpandedRows())
+        val topBottom = docksTopBottom()
+        if (topBottom != dockTopBottom) {
+            // 换吸附轴（进入横排 / 转横屏 / 转回竖屏）：按窗口左上角所在的半区选最近的那条边。
+            // 不用宽高算中心——旋转瞬间拿到的还是旧方向的视口尺寸。
+            val bounds = FloatingWindowBounds.safeBounds(windowManager, rootView, layoutParams, edgeMargin())
+            if (topBottom) {
+                isDockedTop = layoutParams.y < (bounds.top + bounds.bottom) / 2
+            } else {
+                isDockedLeft = layoutParams.x < (bounds.left + bounds.right) / 2
+            }
+            dockTopBottom = topBottom
+        }
+    }
+
+    /** 横屏或横排时按钮条长边是水平的，吸附上下边；否则（竖排、竖屏折叠）贴左右边 */
+    private fun docksTopBottom(): Boolean =
+        ui.horizontal || resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    private fun currentExpandedRows(): Int = when {
+        !ui.isExpanded -> 0
+        ui.isRunning -> 1
+        else -> 7
+    }
+
+    private fun shouldUseHorizontalLayout(rows: Int): Boolean {
+        if (rows <= 0) return false
+        // 主按钮 40dp + 上下各 8dp 内边距 + 每行 40dp 按钮与 4dp 间距
+        val length = dp(56 + rows * 44)
+        val size = FloatingWindowBounds.usableSize(windowManager, rootView, layoutParams)
+        return length > size.y && length <= size.x
+    }
+
+    /** 主窗口按当前吸附轴贴边（上下或左右），另一轴只做安全区钳制，保留用户拖动的位置 */
+    private fun clampMainWindow() {
+        if (!::rootView.isInitialized || !::layoutParams.isInitialized) return
+        val bounds = FloatingWindowBounds.safeBounds(windowManager, rootView, layoutParams, edgeMargin())
+        if (docksTopBottom()) {
+            layoutParams.y = if (isDockedTop) {
+                bounds.top
+            } else {
+                (bounds.bottom - rootView.height).coerceAtLeast(bounds.top)
+            }
+            layoutParams.x = FloatingWindowBounds.clampInside(
+                layoutParams.x, rootView.width, bounds.left, bounds.right
+            )
+        } else {
+            layoutParams.x = if (isDockedLeft) {
+                bounds.left
+            } else {
+                (bounds.right - rootView.width).coerceAtLeast(bounds.left)
+            }
+            layoutParams.y = FloatingWindowBounds.clampInside(
+                layoutParams.y, rootView.height, bounds.top, bounds.bottom
+            )
+        }
+        try {
+            windowManager.updateViewLayout(rootView, layoutParams)
+        } catch (e: Exception) {
+            Log.e("FloatingWindow", "clampMainWindow 失败", e)
+        }
+    }
+
+    private fun edgeMargin(): Int = dp(12)
+
+    private fun clampAllWindowsToScreen() {
         // 主悬浮窗
-        layoutParams.x = layoutParams.x.coerceIn(0, newW - rootView.width)
-        layoutParams.y = layoutParams.y.coerceIn(0, newH - rootView.height)
-        windowManager.updateViewLayout(rootView, layoutParams)
+        clampMainWindow()
 
         // 所有点击点
         for (point in clickPoints) {
             point.params?.let { params ->
-                params.x = params.x.coerceIn(0, newW - point.view.width)
-                params.y = params.y.coerceIn(0, newH - point.view.height)
+                val size = FloatingWindowBounds.usableSize(windowManager, point.view, params)
+                params.x = FloatingWindowBounds.clampOffset(params.x, point.view.width, size.x)
+                params.y = FloatingWindowBounds.clampOffset(params.y, point.view.height, size.y)
                 windowManager.updateViewLayout(point.view, params)
                 point.x = params.x.toFloat()
                 point.y = params.y.toFloat()
@@ -247,16 +369,19 @@ class FloatingWindowService : Service() {
         }
 
         // 管道使用全屏透明绘制层，屏幕尺寸变化时只需要更新绘制层尺寸
+        val usable = FloatingWindowBounds.usableSize(windowManager, rootView, layoutParams)
         for ((pairId, pipePair) in pipeMap) {
             val (lineView, params) = pipePair
             params.x = 0
             params.y = 0
-            params.width = newW
-            params.height = newH
+            params.width = usable.x
+            params.height = usable.y
             windowManager.updateViewLayout(lineView, params)
             updatePipeLine(pairId)
         }
     }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     override fun onDestroy() {
         // 发送广播通知 Activity 服务已停止
@@ -309,6 +434,7 @@ class FloatingWindowService : Service() {
                 initialY = event.rawY
                 initialWindowX = layoutParams.x
                 initialWindowY = layoutParams.y
+                dragBounds.set(FloatingWindowBounds.safeBounds(windowManager, rootView, layoutParams, edgeMargin()))
                 isDragging = false   // 重置拖动状态
                 ui.mainPressed = true   // 按下反馈（等价原 bg_floating_button 的 pressed 态）
                 true  // 必须返回 true，否则后续事件收不到
@@ -325,11 +451,13 @@ class FloatingWindowService : Service() {
                     ui.mainPressed = false
                 }
                 if (isDragging) {
-                    // 更新窗口位置
-                    layoutParams.x = initialWindowX + dx.toInt()
-                    layoutParams.y = initialWindowY + dy.toInt()
-                    // 垂直边界限制，防止移出屏幕（顶部 0 到底部 screenHeight - 视图高度）
-                    layoutParams.y = layoutParams.y.coerceIn(0, getScreenHeight() - rootView.height)
+                    // 只允许在安全区内拖动，避免拖出屏幕后松手收不回来
+                    layoutParams.x = FloatingWindowBounds.clampInside(
+                        initialWindowX + dx.toInt(), rootView.width, dragBounds.left, dragBounds.right
+                    )
+                    layoutParams.y = FloatingWindowBounds.clampInside(
+                        initialWindowY + dy.toInt(), rootView.height, dragBounds.top, dragBounds.bottom
+                    )
                     // 应用新位置
                     windowManager.updateViewLayout(rootView, layoutParams)
                 }
@@ -364,46 +492,46 @@ class FloatingWindowService : Service() {
             stopBtnWindowRect = Rect()
         }
 
-        // 视图大小改变后，重新测量并更新布局。
-        // Compose 内容尺寸变化会触发一次布局，故用 doOnLayout 等布局完成后再校正窗口位置/尺寸。
-        rootView.doOnLayout {
-            // 通知窗口管理器更新视图（尺寸可能变化）
-            windowManager.updateViewLayout(rootView, layoutParams)
-
-            // 保持吸附边缘不变
-            if (isDockedLeft) {
-                layoutParams.x = 0
-            } else {
-                layoutParams.x = getScreenWidth() - rootView.width
-            }
-
-            // 再次限制垂直范围，防止底部超出屏幕
-            layoutParams.y = layoutParams.y.coerceIn(0, getScreenHeight() - rootView.height)
-            windowManager.updateViewLayout(rootView, layoutParams)
-        }
+        // 行数变化可能让竖排装不下：先决定横排 / 竖排，再等 Compose 重排后钳制窗口
+        syncLayoutMode()
+        rootView.doOnLayout { clampMainWindow() }
     }
 
     /**
-     * 根据当前悬浮窗中心点位置，将其吸附到屏幕左侧或右侧边缘
+     * 松手吸附：长边与吸附边缘平行，另一轴保留松手时的位置。
+     * 横排 / 横屏贴上 / 下边（水平位置不强制），竖排贴左 / 右边。
      */
     private fun snapToEdge() {
         rootView.post {
+            val bounds = FloatingWindowBounds.safeBounds(windowManager, rootView, layoutParams, edgeMargin())
             val viewWidth = rootView.width
-            val centerX = layoutParams.x + viewWidth / 2  // 窗口中心点的 X 坐标
-
-            if (centerX < getScreenWidth() / 2) {
-                // 中心点偏左，吸附左侧
-                layoutParams.x = 0
-                isDockedLeft = true
+            val viewHeight = rootView.height
+            if (docksTopBottom()) {
+                isDockedTop = layoutParams.y + viewHeight / 2 < (bounds.top + bounds.bottom) / 2
+                layoutParams.y = if (isDockedTop) {
+                    bounds.top
+                } else {
+                    (bounds.bottom - viewHeight).coerceAtLeast(bounds.top)
+                }
+                layoutParams.x = FloatingWindowBounds.clampInside(
+                    layoutParams.x, viewWidth, bounds.left, bounds.right
+                )
             } else {
-                // 中心点偏右，吸附右侧
-                layoutParams.x = getScreenWidth() - viewWidth
-                isDockedLeft = false
+                isDockedLeft = layoutParams.x + viewWidth / 2 < (bounds.left + bounds.right) / 2
+                layoutParams.x = if (isDockedLeft) {
+                    bounds.left
+                } else {
+                    (bounds.right - viewWidth).coerceAtLeast(bounds.left)
+                }
+                layoutParams.y = FloatingWindowBounds.clampInside(
+                    layoutParams.y, viewHeight, bounds.top, bounds.bottom
+                )
             }
-
-            // 确保垂直方向在屏幕内
-            layoutParams.y = layoutParams.y.coerceIn(0, getScreenHeight() - rootView.height)
-            windowManager.updateViewLayout(rootView, layoutParams)
+            try {
+                windowManager.updateViewLayout(rootView, layoutParams)
+            } catch (e: Exception) {
+                Log.e("FloatingWindow", "snapToEdge 失败", e)
+            }
         }
     }
 
@@ -607,8 +735,13 @@ class FloatingWindowService : Service() {
                         isDragging = true
                     }
                     if (isDragging) {
-                        params.x = (downParamX + dx).toInt().coerceIn(0, getScreenWidth() - view.width)
-                        params.y = (downParamY + dy).toInt().coerceIn(0, getScreenHeight() - view.height)
+                        val usable = FloatingWindowBounds.usableSize(windowManager, view, params)
+                        params.x = FloatingWindowBounds.clampOffset(
+                            (downParamX + dx).toInt(), view.width, usable.x
+                        )
+                        params.y = FloatingWindowBounds.clampOffset(
+                            (downParamY + dy).toInt(), view.height, usable.y
+                        )
                         windowManager.updateViewLayout(view, params)
                         point.x = params.x.toFloat()
                         point.y = params.y.toFloat()
@@ -858,6 +991,7 @@ class FloatingWindowService : Service() {
         }
 
         isRunning = true
+        syncLayoutMode()   // 运行态只剩停止按钮，行数变化后重新判断横排 / 竖排
         // 透明度沿用用户设置，不在这里强制半透明
         stopBtnWindowRect = Rect()
         // 运行中展开栏只保留「停止」按钮，其余按钮全部隐藏（由 ui.isRunning 派生，Compose 自动刷新）
@@ -1060,6 +1194,7 @@ class FloatingWindowService : Service() {
 
     private fun stopRunning() {
         isRunning = false
+        syncLayoutMode()   // 恢复完整展开栏后重新判断横排 / 竖排
         runHandler.removeCallbacksAndMessages(null)
 
         // 恢复主悬浮窗

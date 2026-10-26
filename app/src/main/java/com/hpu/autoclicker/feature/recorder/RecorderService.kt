@@ -7,8 +7,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
-import android.graphics.Point
+import android.content.res.Configuration
 import android.graphics.PixelFormat
+import android.graphics.Point
+import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -24,6 +26,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
 import com.hpu.autoclicker.core.accessibility.AutoClickerAccessibilityService
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
+import com.hpu.autoclicker.core.ui.FloatingWindowBounds
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
 import com.hpu.autoclicker.core.ui.ServiceDialogs
 
@@ -71,6 +74,22 @@ class RecorderService : Service() {
     private var isDragging = false
     private var mainHidden = false
     private var forceNotTouchable = false
+
+    /** 竖排时吸附边缘：true = 左侧，false = 右侧。横竖屏切换后按它重新贴边 */
+    private var dockedLeft = true
+
+    /** 横排时吸附边缘：true = 顶部，false = 底部 */
+    private var dockedTop = true
+
+    /** 当前吸附轴：true = 贴上 / 下边（横排或横屏），false = 贴左 / 右边 */
+    private var dockTopBottom = false
+
+    /** 拖动期间固定的安全区，避免每帧用旧坐标重算原点偏移 */
+    private val dragBounds = Rect()
+
+    /** 上次已知的屏幕尺寸，用来区分「真的横竖屏切换」与深色模式 / 字体变化 */
+    private var lastScreenW = 0
+    private var lastScreenH = 0
 
     // ===== 录制小条 =====
     private val barState = RecorderBarState()
@@ -175,6 +194,7 @@ class RecorderService : Service() {
             }
         }
 
+        val visible = FloatingWindowBounds.displaySize(windowManager)
         lp = WindowManager.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -186,14 +206,27 @@ class RecorderService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = 0
-            y = (getScreenHeight() - dp(56)) / 2
+            y = (visible.y - dp(56)) / 2
         }
+
+        lastScreenW = getScreenWidth()
+        lastScreenH = getScreenHeight()
 
         try {
             windowManager.addView(root, lp)
             rootAdded = true
         } catch (e: Exception) {
             android.util.Log.e("Recorder", "addView 失败", e)
+        }
+
+        // 内容尺寸变化（展开 / 折叠 / 横竖屏重排）后重选布局并夹回可见区域
+        root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (rootAdded &&
+                (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop)
+            ) {
+                syncLayoutMode()
+                clampWindow()
+            }
         }
 
         ui.speed = RecorderStore.getSpeed(this)
@@ -258,6 +291,7 @@ class RecorderService : Service() {
             downRawY = event.rawY
             initWindowX = lp.x
             initWindowY = lp.y
+            dragBounds.set(FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin()))
             isDragging = false
             ui.mainPressed = true
             true
@@ -271,10 +305,12 @@ class RecorderService : Service() {
                 ui.mainPressed = false
             }
             if (isDragging) {
-                lp.x = (initWindowX + dx.toInt())
-                    .coerceIn(0, (getScreenWidth() - root.width).coerceAtLeast(0))
-                lp.y = (initWindowY + dy.toInt())
-                    .coerceIn(0, (getScreenHeight() - root.height).coerceAtLeast(0))
+                lp.x = FloatingWindowBounds.clampInside(
+                    initWindowX + dx.toInt(), root.width, dragBounds.left, dragBounds.right
+                )
+                lp.y = FloatingWindowBounds.clampInside(
+                    initWindowY + dy.toInt(), root.height, dragBounds.top, dragBounds.bottom
+                )
                 try {
                     windowManager.updateViewLayout(root, lp)
                 } catch (e: Exception) {
@@ -290,7 +326,8 @@ class RecorderService : Service() {
                 if (event.actionMasked == MotionEvent.ACTION_UP) snapToEdge()
             } else if (event.actionMasked == MotionEvent.ACTION_UP) {
                 ui.isExpanded = !ui.isExpanded
-                clampWindowY()
+                syncLayoutMode()
+                clampWindow()
             }
             isDragging = false
             true
@@ -299,10 +336,24 @@ class RecorderService : Service() {
         else -> false
     }
 
+    /**
+     * 松手吸附：长边与吸附边缘平行，另一轴保留松手时的位置。
+     * 横排 / 横屏贴上 / 下边（水平位置不强制），竖排贴左 / 右边。
+     */
     private fun snapToEdge() {
-        val screenW = getScreenWidth()
+        if (!rootAdded) return
+        val bounds = FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin())
         val viewW = root.width.coerceAtLeast(root.measuredWidth)
-        lp.x = if (lp.x + viewW / 2 < screenW / 2) 0 else (screenW - viewW).coerceAtLeast(0)
+        val viewH = root.height.coerceAtLeast(root.measuredHeight)
+        if (docksTopBottom()) {
+            dockedTop = lp.y + viewH / 2 < (bounds.top + bounds.bottom) / 2
+            lp.y = if (dockedTop) bounds.top else (bounds.bottom - viewH).coerceAtLeast(bounds.top)
+            lp.x = FloatingWindowBounds.clampInside(lp.x, viewW, bounds.left, bounds.right)
+        } else {
+            dockedLeft = lp.x + viewW / 2 < (bounds.left + bounds.right) / 2
+            lp.x = if (dockedLeft) bounds.left else (bounds.right - viewW).coerceAtLeast(bounds.left)
+            lp.y = FloatingWindowBounds.clampInside(lp.y, viewH, bounds.top, bounds.bottom)
+        }
         try {
             windowManager.updateViewLayout(root, lp)
         } catch (e: Exception) {
@@ -310,20 +361,104 @@ class RecorderService : Service() {
         }
     }
 
-    private fun clampWindowY() {
-        root.post {
-            if (!rootAdded) return@post
-            val maxY = (getScreenHeight() - root.height).coerceAtLeast(0)
-            val newY = lp.y.coerceIn(0, maxY)
-            if (newY != lp.y) {
-                lp.y = newY
-                try {
-                    windowManager.updateViewLayout(root, lp)
-                } catch (e: Exception) {
-                    android.util.Log.e("Recorder", "clampWindowY 失败", e)
-                }
+    /** 把窗口整体夹回安全区域：贴边轴跟随当前吸附轴，另一轴保留位置 */
+    private fun clampWindow() {
+        if (!rootAdded) return
+        root.post { applyWindowClamp() }
+    }
+
+    private fun applyWindowClamp() {
+        if (!rootAdded) return
+        val bounds = FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin())
+        val newX: Int
+        val newY: Int
+        if (docksTopBottom()) {
+            newY = if (dockedTop) {
+                bounds.top
+            } else {
+                (bounds.bottom - root.height).coerceAtLeast(bounds.top)
+            }
+            newX = FloatingWindowBounds.clampInside(lp.x, root.width, bounds.left, bounds.right)
+        } else {
+            newX = if (dockedLeft) bounds.left else (bounds.right - root.width).coerceAtLeast(bounds.left)
+            newY = FloatingWindowBounds.clampInside(lp.y, root.height, bounds.top, bounds.bottom)
+        }
+        if (newX != lp.x || newY != lp.y) {
+            lp.x = newX
+            lp.y = newY
+            try {
+                windowManager.updateViewLayout(root, lp)
+            } catch (e: Exception) {
+                android.util.Log.e("Recorder", "clampWindow 失败", e)
             }
         }
+    }
+
+    private fun edgeMargin(): Int = dp(12)
+
+    /**
+     * 横屏可用高度通常放不下竖向面板：竖向长度 + 面板宽度都能放下时改为横排，
+     * 两者都放不下则只能保持竖排并提示用户。
+     */
+    private fun syncLayoutMode() {
+        ui.horizontal = shouldUseHorizontalLayout()
+        val topBottom = docksTopBottom()
+        if (topBottom != dockTopBottom) {
+            // 换吸附轴（进入横排 / 转横屏 / 转回竖屏）：按窗口左上角所在的半区选最近的那条边。
+            // 不用宽高算中心——旋转瞬间拿到的还是旧方向的视口尺寸。
+            val bounds = FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin())
+            if (topBottom) {
+                dockedTop = lp.y < (bounds.top + bounds.bottom) / 2
+            } else {
+                dockedLeft = lp.x < (bounds.left + bounds.right) / 2
+            }
+            dockTopBottom = topBottom
+        }
+    }
+
+    /** 横屏或横排时面板长边是水平的，吸附上下边；否则（竖排、竖屏折叠）贴左右边 */
+    private fun docksTopBottom(): Boolean =
+        ui.horizontal || resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    private fun shouldUseHorizontalLayout(): Boolean {
+        if (!ui.isExpanded) return false
+        val size = FloatingWindowBounds.usableSize(windowManager, root, lp)
+        return verticalLength() > size.y && horizontalLength() <= size.x
+    }
+
+    private fun verticalLength(): Int = dp(
+        16 + 56 + 8 + if (ui.mode == RecorderPanelMode.EDIT) 213 else 225
+    )
+
+    private fun horizontalLength(): Int = dp(16 + 56 + 8 + 236)
+
+    private fun warnIfExpandedTooLarge() {
+        if (!ui.isExpanded) return
+        val size = FloatingWindowBounds.usableSize(windowManager, root, lp)
+        if (verticalLength() > size.y && horizontalLength() > size.x) {
+            toast("当前屏幕放不下展开面板，请旋转设备后再试")
+        }
+    }
+
+    /** 屏幕尺寸（含旋转）变化：重排布局模式并把主窗、录制小条都夹回可见区域 */
+    private fun handleScreenSizeChanged() {
+        val w = getScreenWidth()
+        val h = getScreenHeight()
+        if (w == lastScreenW && h == lastScreenH) return
+        lastScreenW = w
+        lastScreenH = h
+        syncLayoutMode()
+        root.post { applyWindowClamp() }
+        // 旋转动画期间视图尺寸/位置可能还在过渡，延迟再校一次
+        root.postDelayed({ syncLayoutMode(); applyWindowClamp(); clampBar() }, 350)
+        clampBar()
+        warnIfExpandedTooLarge()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (!rootAdded) return
+        handleScreenSizeChanged()
     }
 
     private fun hideMainWindow() {
@@ -338,7 +473,8 @@ class RecorderService : Service() {
         mainHidden = false
         root.visibility = View.VISIBLE
         updateMainWindowTouchable()
-        clampWindowY()
+        syncLayoutMode()
+        clampWindow()
     }
 
     /** 隐藏 / 回放手势与悬浮窗冲突时，统一在这里增删 NOT_TOUCHABLE */
@@ -694,7 +830,7 @@ class RecorderService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = if (barX >= 0) barX else dp(12)
-            y = if (barY >= 0) barY else (getScreenHeight() - dp(150)).coerceAtLeast(0)
+            y = if (barY >= 0) barY else (FloatingWindowBounds.displaySize(windowManager).y - dp(150)).coerceAtLeast(0)
         }
         try {
             windowManager.addView(view, barLp)
@@ -736,10 +872,13 @@ class RecorderService : Service() {
         MotionEvent.ACTION_MOVE -> {
             val view = barView
             if (view != null) {
-                val maxX = (getScreenWidth() - view.width).coerceAtLeast(0)
-                val maxY = (getScreenHeight() - view.height).coerceAtLeast(0)
-                barLp.x = (barInitX + (event.rawX - barDownRawX).toInt()).coerceIn(0, maxX)
-                barLp.y = (barInitY + (event.rawY - barDownRawY).toInt()).coerceIn(0, maxY)
+                val size = FloatingWindowBounds.usableSize(windowManager, view, barLp)
+                barLp.x = FloatingWindowBounds.clampOffset(
+                    barInitX + (event.rawX - barDownRawX).toInt(), view.width, size.x
+                )
+                barLp.y = FloatingWindowBounds.clampOffset(
+                    barInitY + (event.rawY - barDownRawY).toInt(), view.height, size.y
+                )
                 try {
                     windowManager.updateViewLayout(view, barLp)
                 } catch (e: Exception) {
@@ -756,6 +895,26 @@ class RecorderService : Service() {
         }
 
         else -> false
+    }
+
+    /** 旋转后旧方向的小条坐标可能已越界，夹回可见区域 */
+    private fun clampBar() {
+        val view = barView ?: return
+        if (!barAdded) return
+        val size = FloatingWindowBounds.usableSize(windowManager, view, barLp)
+        val newX = FloatingWindowBounds.clampOffset(barLp.x, view.width, size.x)
+        val newY = FloatingWindowBounds.clampOffset(barLp.y, view.height, size.y)
+        if (newX != barLp.x || newY != barLp.y) {
+            barLp.x = newX
+            barLp.y = newY
+            barX = newX
+            barY = newY
+            try {
+                windowManager.updateViewLayout(view, barLp)
+            } catch (e: Exception) {
+                android.util.Log.e("Recorder", "录制小条夹取失败", e)
+            }
+        }
     }
 
     // ==================== 回放 ====================

@@ -54,6 +54,9 @@ class RecorderFloatingUiState {
     var isExpanded by mutableStateOf(false)
     var mode by mutableStateOf(RecorderPanelMode.EDIT)
 
+    /** 横屏高度放不下竖向面板时改为横排展开，由 Service 按屏幕尺寸切换 */
+    var horizontal by mutableStateOf(false)
+
     var mainPressed by mutableStateOf(false)
 
     var scriptName by mutableStateOf("未命名脚本")
@@ -94,42 +97,72 @@ fun RecorderFloatingContent(
     onReturnEdit: () -> Unit,
     onRepeatChange: (Int) -> Unit,
 ) {
-    val scheme = MaterialTheme.colorScheme
-    Column(
-        modifier = Modifier
-            .background(Color.Transparent)
-            .padding(Dimens.space8),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        FloatingSquareButton(
-            modifier = Modifier.pointerInteropFilter { onMainTouch(it) },
-            pressed = state.mainPressed,
+    if (state.horizontal) {
+        Row(
+            modifier = Modifier
+                .background(Color.Transparent)
+                .padding(Dimens.space8),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Image(
-                painter = painterResource(R.drawable.ic_record),
-                contentDescription = "录点器",
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(Dimens.space8),
-                colorFilter = ColorFilter.tint(scheme.onPrimary),
-            )
+            MainButton(state, onMainTouch)
+            if (state.isExpanded) {
+                Spacer(Modifier.width(Dimens.space8))
+                RecorderPanel(
+                    state = state,
+                    onRecord = onRecord,
+                    onRun = onRun,
+                    onScripts = onScripts,
+                    onSettings = onSettings,
+                    onClose = onClose,
+                    onTogglePlay = onTogglePlay,
+                    onStopPlay = onStopPlay,
+                    onReturnEdit = onReturnEdit,
+                    onRepeatChange = onRepeatChange,
+                )
+            }
         }
+    } else {
+        Column(
+            modifier = Modifier
+                .background(Color.Transparent)
+                .padding(Dimens.space8),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            MainButton(state, onMainTouch)
+            if (state.isExpanded) {
+                Spacer(Modifier.height(Dimens.space8))
+                RecorderPanel(
+                    state = state,
+                    onRecord = onRecord,
+                    onRun = onRun,
+                    onScripts = onScripts,
+                    onSettings = onSettings,
+                    onClose = onClose,
+                    onTogglePlay = onTogglePlay,
+                    onStopPlay = onStopPlay,
+                    onReturnEdit = onReturnEdit,
+                    onRepeatChange = onRepeatChange,
+                )
+            }
+        }
+    }
+}
 
-        if (state.isExpanded) {
-            Spacer(Modifier.height(Dimens.space8))
-            RecorderPanel(
-                state = state,
-                onRecord = onRecord,
-                onRun = onRun,
-                onScripts = onScripts,
-                onSettings = onSettings,
-                onClose = onClose,
-                onTogglePlay = onTogglePlay,
-                onStopPlay = onStopPlay,
-                onReturnEdit = onReturnEdit,
-                onRepeatChange = onRepeatChange,
-            )
-        }
+@Composable
+private fun MainButton(state: RecorderFloatingUiState, onMainTouch: (MotionEvent) -> Boolean) {
+    val scheme = MaterialTheme.colorScheme
+    FloatingSquareButton(
+        modifier = Modifier.pointerInteropFilter { onMainTouch(it) },
+        pressed = state.mainPressed,
+    ) {
+        Image(
+            painter = painterResource(R.drawable.ic_record),
+            contentDescription = "录点器",
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(Dimens.space8),
+            colorFilter = ColorFilter.tint(scheme.onPrimary),
+        )
     }
 }
 
