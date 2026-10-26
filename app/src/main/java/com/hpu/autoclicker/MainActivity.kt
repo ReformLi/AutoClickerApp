@@ -10,6 +10,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.setContent
@@ -21,10 +23,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.hpu.autoclicker.core.accessibility.AutoClickerAccessibilityService
+import com.hpu.autoclicker.core.mode.AppMode
 import com.hpu.autoclicker.feature.clicker.FloatingWindowService
 import com.hpu.autoclicker.feature.main.MainScreen
 import com.hpu.autoclicker.feature.main.MainUiState
 import com.hpu.autoclicker.feature.quickclick.QuickClickService
+import com.hpu.autoclicker.feature.recorder.RecorderService
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
 
 class MainActivity : AppCompatActivity() {
@@ -32,12 +36,14 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val REQUEST_OVERLAY_PERMISSION = 1001
 
-        // 新旧功能模式持久化：old = 旧功能（默认），new = 悬浮快捷点击
+        // 功能模式持久化：clicker / quick_click / recorder；
+        // 旧版本的 old / new 由 AppMode.fromPref 自动迁移
         private const val MODE_PREFS = "feature_mode"
         private const val MODE_KEY = "mode"
-        private const val MODE_OLD = "old"
-        private const val MODE_NEW = "new"
     }
+
+    /** 切模块时等待旧服务先移除悬浮窗，再启动目标模块 */
+    private val modeSwitchHandler = Handler(Looper.getMainLooper())
 
     /**
      * Compose UI 状态。
@@ -72,7 +78,7 @@ class MainActivity : AppCompatActivity() {
                         refreshPermissionAndServiceState()
                         toast("状态已刷新")
                     },
-                    onSwitchMode = { toNew -> requestSwitchMode(toNew) },
+                    onSwitchMode = { mode -> requestSwitchMode(mode) },
                     onToggleService = {
                         if (isServiceRunning) stopFloatingService() else startFloatingService()
                         updateToggleButton()
@@ -87,6 +93,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        modeSwitchHandler.removeCallbacksAndMessages(null)
         unregisterReceiver(serviceStoppedReceiver)
     }
 
@@ -96,26 +103,55 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 切换功能模式并持久化；已是目标模式则不处理，悬浮窗运行中提示先关闭
+     * 切换功能模块。
+     *
+     * 规则：
+     * - 权限不齐（悬浮窗 / 无障碍）直接失败提示，不改变模式，主页选中态不变；
+     * - 当前悬浮窗在运行 → 先停旧服务（录点器会借此保存草稿/回放现场），再自动启动目标模块；
+     * - 录点器切回时由它自己弹「草稿三选一」，不自动恢复录制；
+     *   回放现场只恢复为暂停态，不自动注入。
      */
-    private fun requestSwitchMode(toNew: Boolean) {
-        if (isFeatureModeNew() == toNew) return
-        if (isServiceRunning) {
-            toast("请先关闭悬浮窗再切换模式")
+    private fun requestSwitchMode(target: AppMode) {
+        val current = currentMode()
+        if (current == target) return
+
+        if (!checkOverlayPermission()) {
+            toast("请先授予悬浮窗权限再切换模块")
             return
         }
+        if (!checkAccessibilityPermission()) {
+            toast("无障碍服务未开启，无法切换模块")
+            return
+        }
+
+        val wasRunning = isServiceRunning || isFloatingServiceRunning(serviceClassOf(current))
+        if (wasRunning) {
+            stopService(Intent(this, serviceClassOf(current)))
+            isServiceRunning = false
+        }
+
         getSharedPreferences(MODE_PREFS, MODE_PRIVATE)
-            .edit().putString(MODE_KEY, if (toNew) MODE_NEW else MODE_OLD).apply()
-        // 原 updateModeSwitchUI() 的分段开关选中态渲染已由 Compose 依据状态派生，此处无需手动切换
+            .edit().putString(MODE_KEY, target.prefValue).apply()
         refreshPermissionAndServiceState()
-        toast(if (toNew) "已切换到代点器" else "已切换到连点器")
+
+        if (wasRunning) {
+            // 等旧服务的悬浮窗先移除，再启动目标模块，避免两个悬浮窗短暂叠在一起
+            modeSwitchHandler.postDelayed({
+                if (currentMode() == target) {
+                    startFloatingService(announce = false)
+                    toast("已切换到${target.displayName}，悬浮窗已自动启动")
+                }
+            }, 250L)
+        } else {
+            toast("已切换到${target.displayName}")
+        }
     }
 
-    /** 当前是否为新功能模式（悬浮快捷点击），默认旧功能 */
-    private fun isFeatureModeNew(): Boolean {
-        return getSharedPreferences(MODE_PREFS, MODE_PRIVATE)
-            .getString(MODE_KEY, MODE_OLD) == MODE_NEW
-    }
+    /** 当前功能模块，默认连点器 */
+    private fun currentMode(): AppMode =
+        AppMode.fromPref(
+            getSharedPreferences(MODE_PREFS, MODE_PRIVATE).getString(MODE_KEY, null)
+        )
 
     // 广播接收器
     private val serviceStoppedReceiver = object : BroadcastReceiver() {
@@ -199,7 +235,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         uiState = MainUiState(
-            isNewMode = isFeatureModeNew(),
+            mode = currentMode(),
             hasOverlayPermission = hasOverlay,
             hasAccessibilityPermission = hasAccessibility,
             isServiceRunning = isServiceRunning,
@@ -207,9 +243,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** 按当前模式返回对应的前台服务 */
-    private fun currentServiceClass(): Class<*> {
-        return if (isFeatureModeNew()) QuickClickService::class.java
-        else FloatingWindowService::class.java
+    private fun currentServiceClass(): Class<*> = serviceClassOf(currentMode())
+
+    private fun serviceClassOf(mode: AppMode): Class<*> = when (mode) {
+        AppMode.CLICKER -> FloatingWindowService::class.java
+        AppMode.QUICK_CLICK -> QuickClickService::class.java
+        AppMode.RECORDER -> RecorderService::class.java
     }
 
     /**
@@ -236,9 +275,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 启动悬浮窗服务（按当前模式路由：旧功能 / 新功能快捷点击）
+     * 启动悬浮窗服务（按当前模式路由：连点器 / 代点器 / 录点器）
      */
-    private fun startFloatingService() {
+    private fun startFloatingService(announce: Boolean = true) {
         requestNotificationPermissionIfNeeded()
         val intent = Intent(this, currentServiceClass())
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -247,7 +286,7 @@ class MainActivity : AppCompatActivity() {
             startService(intent)
         }
         isServiceRunning = true
-        toast("悬浮窗已启动")
+        if (announce) toast("悬浮窗已启动")
         updateToggleButton()
     }
 

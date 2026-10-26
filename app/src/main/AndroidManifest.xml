@@ -33,6 +33,13 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- 录点器服务：录制 / 回放独立运行，脚本与本模块的现场文件自持 -->
+        <service
+            android:name=".feature.recorder.RecorderService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- 声明无障碍服务，权限设为 android.permission.BIND_ACCESSIBILITY_SERVICE -->
         <service
             android:name=".core.accessibility.AutoClickerAccessibilityService"

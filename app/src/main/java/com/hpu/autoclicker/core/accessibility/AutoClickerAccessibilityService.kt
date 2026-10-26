@@ -172,6 +172,18 @@ class AutoClickerAccessibilityService : AccessibilityService() {
     fun dispatchQuickGesture(
         gesture: GestureDescription,
         onResult: ((Boolean) -> Unit)? = null,
+    ): Boolean = dispatchInjectedGesture(gesture, onResult)
+
+    /**
+     * 通用手势注入（录点器回放 / 即时回显共用）。
+     * 录点器只负责构造 GestureDescription，不依赖任何业务模块；
+     * 这里同样只提交并回传结果，不做坐标/时长解释。
+     *
+     * @return dispatchGesture 是否成功提交；false 表示服务断连或被系统拒绝，此时不会再有回调
+     */
+    fun dispatchInjectedGesture(
+        gesture: GestureDescription,
+        onResult: ((Boolean) -> Unit)? = null,
     ): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
             onResult?.invoke(false)

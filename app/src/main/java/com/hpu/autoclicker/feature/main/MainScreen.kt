@@ -38,6 +38,7 @@ import com.hpu.autoclicker.core.components.AppPillButton
 import com.hpu.autoclicker.core.components.AppSegmentedControl
 import com.hpu.autoclicker.core.components.AppSectionTitle
 import com.hpu.autoclicker.core.components.AppTitle
+import com.hpu.autoclicker.core.mode.AppMode
 import com.hpu.autoclicker.core.theme.AppTheme
 import com.hpu.autoclicker.core.theme.Dimens
 
@@ -48,7 +49,7 @@ import com.hpu.autoclicker.core.theme.Dimens
  */
 @Immutable
 data class MainUiState(
-    val isNewMode: Boolean = false,
+    val mode: AppMode = AppMode.CLICKER,
     val hasOverlayPermission: Boolean = false,
     val hasAccessibilityPermission: Boolean = false,
     val isServiceRunning: Boolean = false,
@@ -57,7 +58,7 @@ data class MainUiState(
         get() = hasOverlayPermission && hasAccessibilityPermission
 
     val modeName: String
-        get() = if (isNewMode) "代点器" else "连点器"
+        get() = mode.displayName
 }
 
 /**
@@ -76,7 +77,7 @@ fun MainScreen(
     state: MainUiState,
     onRequestPermission: () -> Unit,
     onRefresh: () -> Unit,
-    onSwitchMode: (toNew: Boolean) -> Unit,
+    onSwitchMode: (AppMode) -> Unit,
     onToggleService: () -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -170,9 +171,9 @@ fun MainScreen(
                 )
             }
             AppSegmentedControl(
-                options = listOf("连点器", "代点器"),
-                selectedIndex = if (state.isNewMode) 1 else 0,
-                onSelect = { index -> onSwitchMode(index == 1) },
+                options = AppMode.entries.map { it.displayName },
+                selectedIndex = state.mode.ordinal,
+                onSelect = { index -> onSwitchMode(AppMode.entries[index]) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = Dimens.fieldGap),
@@ -219,8 +220,7 @@ private fun HeroCard(state: MainUiState) {
 }
 
 /** 当前模式的一句话说明 */
-private fun modeDescription(state: MainUiState): String =
-    if (state.isNewMode) "识别文字/图像/坐标后进行点击" else "按点位循环连点"
+private fun modeDescription(state: MainUiState): String = state.mode.description
 
 /**
  * 应用图标：表面色圆角容器 + 真实启动图标。
