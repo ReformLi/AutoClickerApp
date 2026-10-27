@@ -51,6 +51,8 @@ import com.hpu.autoclicker.core.ui.OpacityDragPreview
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
 import com.hpu.autoclicker.core.ui.ServiceDialogs
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
+import com.hpu.autoclicker.core.util.DebugLog
+import com.hpu.autoclicker.core.util.ScriptNaming
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.random.Random
@@ -88,6 +90,13 @@ class QuickClickService : Service() {
 
         /** 截屏前等待悬浮窗/弹框真正从画面消失的时间 */
         private const val HIDE_BEFORE_SCREENSHOT_MS = 150L
+
+        /**
+         * 截图请求兜底超时。takeScreenshot 在部分机型上会既不回调也不报错
+         * （无障碍刚断开 / 系统截屏服务被限流），没有兜底则 capturePending 永久为真，
+         * 之后所有「屏幕截图」入口都点不动，悬浮窗也保持隐藏状态回不来。
+         */
+        private const val CAPTURE_WATCHDOG_MS = 8000L
 
         /** 点击 / 双击的手势按压时长：固定 50ms，不用 0（0 容易被系统判为无效手势） */
         private const val ACTION_TAP_DURATION_MS = 50L
@@ -181,7 +190,8 @@ class QuickClickService : Service() {
     private var currentScriptName: String? = null
     /** 最近一次保存/加载时的按钮快照，用于判断关闭前是否有未保存的改动 */
     private var savedSnapshot: List<QuickClickConfig>? = null
-    private val lastClickAt = mutableMapOf<String, Long>()
+    /** 每个子按钮槽位上次执行时间，key 为列表下标（下标数量受脚本按钮上限约束） */
+    private val lastClickAt = mutableMapOf<Int, Long>()
 
     /** 图像识别执行用的主线程 Handler（截图调度、重试、结果回主线程） */
     private val matchHandler = Handler(Looper.getMainLooper())
@@ -195,11 +205,14 @@ class QuickClickService : Service() {
     private var captureOverlay: RegionCaptureOverlay? = null
     /** 请求截图后、浮层出现前的等待期（防止连点重复截屏） */
     private var capturePending = false
+    /** 截图请求的兜底超时任务；请求正常回落后取消 */
+    private var captureWatchdog: Runnable? = null
     /** 当前正在显示的坐标拾取浮层 */
     private var pickOverlay: CoordinatePickOverlay? = null
 
     override fun onCreate() {
         super.onCreate()
+        DebugLog.syncFrom(this)
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         touchSlop = ViewConfiguration.get(this).scaledTouchSlop
 
@@ -307,6 +320,8 @@ class QuickClickService : Service() {
         destroyed = true
         // 通知 Activity 服务已停止
         sendBroadcast(Intent("com.hpu.autoclicker.SERVICE_STOPPED").setPackage(packageName))
+        // overlay 弹框窗口不随服务销毁自动移除，先统一收掉，避免留在桌面上点不掉
+        ServiceDialogs.dismissAll(this)
         dragHandler.removeCallbacksAndMessages(null)
         matchHandler.removeCallbacksAndMessages(null)
         matchExecutor.shutdownNow()
@@ -541,7 +556,7 @@ class QuickClickService : Service() {
             stopSelf()
             return
         }
-        showInputDialog("保存脚本", "", "输入脚本名称", 12) { scriptName ->
+        showInputDialog("保存脚本", "", "输入脚本名称", ScriptNaming.MAX_NAME_LENGTH) { scriptName ->
             val save: () -> Unit = {
                 QuickClickStore.saveScript(this, scriptName, configs)
                 currentScriptName = scriptName
@@ -742,7 +757,7 @@ class QuickClickService : Service() {
                 when {
                     passThroughInjected -> Unit      // 长按已透传
                     passThroughSwipe -> forwardPassThroughSwipe()
-                    else -> configs.getOrNull(pressedIndex)?.let { onChildClicked(it) }
+                    else -> configs.getOrNull(pressedIndex)?.let { onChildClicked(pressedIndex, it) }
                 }
             }
             MotionEvent.ACTION_CANCEL -> {
@@ -930,15 +945,17 @@ class QuickClickService : Service() {
     // ==================== 识别 → 动作链路 ====================
 
     /** 子按钮点击：防抖 → 识别坐标 → 按动作类型构造并注入手势 */
-    private fun onChildClicked(cfg: QuickClickConfig) {
+    private fun onChildClicked(index: Int, cfg: QuickClickConfig) {
         if (ui.isEditing) return   // 编辑态不触发识别/动作
 
-        // 防抖：间隔内不重复执行同一按钮（间隔可在“设置”中调整）
+        // 防抖：间隔内不重复执行同一按钮（间隔可在“设置”中调整）。
+        // 按列表下标而非名称计次：名称可重复（默认名相同、重命名后重名），
+        // 用名称会让两个不同按钮互相压制，也会让 map 随改名无限增长。
         val now = System.currentTimeMillis()
         val debounce = QuickClickStore.getDebounce(this)
-        val last = lastClickAt[cfg.name] ?: 0L
+        val last = lastClickAt[index] ?: 0L
         if (now - last < debounce) return
-        lastClickAt[cfg.name] = now
+        lastClickAt[index] = now
 
         when (cfg.type) {
             QuickClickConfig.TYPE_TEXT -> executeTextClick(cfg)
@@ -1034,9 +1051,23 @@ class QuickClickService : Service() {
                 val distance = cfg.swipeDistance
                     .coerceIn(QuickClickConfig.MIN_SWIPE_DISTANCE, maxDistance)
                     .toFloat()
+                var startX = x
+                var startY = y
+                var endX = clampGestureX(x + dx * distance)
+                var endY = clampGestureY(y + dy * distance)
+                // 贴着边沿时终点会被夹回起点，零长度路径系统直接判为无效手势（表现为「手势被系统取消」）。
+                // 改成从起点反向滑同样距离，落点仍是这个按钮对应的位置。
+                if (startX == endX && startY == endY) {
+                    startX = clampGestureX(x - dx * distance)
+                    startY = clampGestureY(y - dy * distance)
+                    endX = clampGestureX(x)
+                    endY = clampGestureY(y)
+                }
+                // 两个方向都被夹平（屏幕比滑动距离还窄）时补一点位移，保证手势非零长度
+                if (startX == endX && startY == endY) endX = startX + 0.5f
                 val path = Path().apply {
-                    moveTo(x, y)
-                    lineTo(clampGestureX(x + dx * distance), clampGestureY(y + dy * distance))
+                    moveTo(startX, startY)
+                    lineTo(endX, endY)
                 }
                 val duration = cfg.swipeDuration.coerceIn(
                     QuickClickConfig.MIN_SWIPE_DURATION,
@@ -1179,6 +1210,7 @@ class QuickClickService : Service() {
         }
         if (capturePending || captureOverlay != null) return
         capturePending = true
+        armCaptureWatchdog(dialog)
         hideSelfForScreenshot()
         hideConfigForCapture(dialog)
         // 淡出/隐藏需要一帧以上才真正反映到截图中，否则悬浮窗或弹框会残留在模板里
@@ -1188,7 +1220,12 @@ class QuickClickService : Service() {
                 return@postDelayed
             }
             svc.takeScreenshotAsync { screen ->
+                cancelCaptureWatchdog()
                 capturePending = false
+                if (destroyed) {
+                    screen?.recycle()      // 服务已销毁，图不会再有人用
+                    return@takeScreenshotAsync
+                }
                 if (screen == null) {
                     restoreAfterCapture(dialog)
                     Toast.makeText(this, "截图失败，请重试", Toast.LENGTH_SHORT).show()
@@ -1197,7 +1234,9 @@ class QuickClickService : Service() {
                 val overlay = RegionCaptureOverlay(this, object : RegionCaptureOverlay.ResultListener {
                     override fun onConfirm(cropped: android.graphics.Bitmap, regionInScreen: android.graphics.Rect) {
                         val name = ImageStore.generateFileName("shot")
-                        if (ImageStore.saveImage(this@QuickClickService, cropped, name)) {
+                        val saved = ImageStore.saveImage(this@QuickClickService, cropped, name)
+                        cropped.recycle()   // 裁剪图用完即回收，不留到 GC
+                        if (saved) {
                             form.imageFileName = name
                             form.type = QuickClickConfig.TYPE_IMAGE
                             form.imageRegionRect =
@@ -1220,6 +1259,30 @@ class QuickClickService : Service() {
                 // 框选浮层覆盖全屏，弹框/悬浮窗保持隐藏到确定或返回键取消后再恢复
             }
         }, HIDE_BEFORE_SCREENSHOT_MS)
+    }
+
+    /**
+     * 截图请求兜底：无障碍的 takeScreenshot 在部分机型上会被静默丢弃（服务刚断开、
+     * 系统限流），既不回调也不报错。没有兜底时悬浮窗与弹框一直藏着，
+     * capturePending 也永久卡住，之后所有截图入口都点不动。
+     */
+    private fun armCaptureWatchdog(dialog: AlertDialog?) {
+        cancelCaptureWatchdog()
+        val runnable = Runnable {
+            captureWatchdog = null
+            if (destroyed || !capturePending) return@Runnable
+            android.util.Log.w("QuickClick", "截图请求超时未回调，已恢复悬浮窗")
+            capturePending = false
+            restoreAfterCapture(dialog)
+            Toast.makeText(this, "截图超时，请重试", Toast.LENGTH_SHORT).show()
+        }
+        captureWatchdog = runnable
+        matchHandler.postDelayed(runnable, CAPTURE_WATCHDOG_MS)
+    }
+
+    private fun cancelCaptureWatchdog() {
+        captureWatchdog?.let { matchHandler.removeCallbacks(it) }
+        captureWatchdog = null
     }
 
     /** 「屏幕取点」：全屏置灰网格浮层 → 点选位置 → 回填 X/Y（触摸不会穿透到下层应用） */
@@ -1295,13 +1358,30 @@ class QuickClickService : Service() {
             Toast.makeText(this, "正在识别，请稍候", Toast.LENGTH_SHORT).show()
             return
         }
-        val template = ImageStore.loadImage(this, cfg.imageFileName)
-        if (template == null) {
-            Toast.makeText(this, "模板图片缺失，请重新编辑选择", Toast.LENGTH_SHORT).show()
+        // 锁在解码前占上：解码期间再点一次不应开出第二条链路
+        matchInProgress = true
+        if (matchExecutor.isShutdown) {
+            matchInProgress = false
             return
         }
-        matchInProgress = true
-        tryMatch(svc, cfg, template, parseRegionRect(cfg.imageRegionRect), attempt = 0)
+        val region = parseRegionRect(cfg.imageRegionRect)
+        // 模板是磁盘 IO + 位图解码，放到匹配线程；放主线程会让大图在点按钮时卡顿
+        matchExecutor.execute {
+            val template = ImageStore.loadImage(this, cfg.imageFileName)
+            matchHandler.post {
+                if (destroyed) {
+                    template?.takeIf { !it.isRecycled }?.recycle()
+                    matchInProgress = false
+                    return@post
+                }
+                if (template == null) {
+                    matchInProgress = false
+                    Toast.makeText(this, "模板图片缺失，请重新编辑选择", Toast.LENGTH_SHORT).show()
+                    return@post
+                }
+                tryMatch(svc, cfg, template, region, attempt = 0)
+            }
+        }
     }
 
     /**
@@ -1319,9 +1399,21 @@ class QuickClickService : Service() {
         hideSelfForScreenshot()
         matchHandler.postDelayed({
             svc.takeScreenshotAsync { screen ->
+                if (destroyed) {
+                    // 服务已销毁：不再恢复窗口 / 提交匹配任务，图也没人用
+                    screen?.recycle()
+                    matchInProgress = false
+                    return@takeScreenshotAsync
+                }
                 showSelfAfterScreenshot()
                 if (screen == null) {
                     onMatchFailed(svc, cfg, template, region, attempt, "截屏失败，请重试")
+                    return@takeScreenshotAsync
+                }
+                // onDestroy 会 shutdownNow；这里与回调同在主线程，检查后再提交不会被拒
+                if (matchExecutor.isShutdown) {
+                    screen.recycle()
+                    matchInProgress = false
                     return@takeScreenshotAsync
                 }
                 matchExecutor.execute {
@@ -1741,7 +1833,7 @@ class QuickClickService : Service() {
             return
         }
         // 从脚本加载来的按钮，预填该脚本名（可改可直接保存）
-        showInputDialog("保存脚本", currentScriptName ?: "", "输入脚本名称", 12) { scriptName ->
+        showInputDialog("保存脚本", currentScriptName ?: "", "输入脚本名称", ScriptNaming.MAX_NAME_LENGTH) { scriptName ->
             if (QuickClickStore.loadScripts(this).any { it.name == scriptName }) {
                 // 名称已存在：确认是否覆盖
                 confirmOverwrite(scriptName) {
@@ -1774,7 +1866,7 @@ class QuickClickService : Service() {
 
     /** 「改名」：重命名脚本（新名已存在则提示） */
     private fun handleRenameScript(script: QuickScript, onChanged: () -> Unit) {
-        showInputDialog("重命名脚本", script.name, "输入新名称", 12) { newName ->
+        showInputDialog("重命名脚本", script.name, "输入新名称", ScriptNaming.MAX_NAME_LENGTH) { newName ->
             if (QuickClickStore.renameScript(this, script.name, newName)) {
                 if (currentScriptName == script.name) currentScriptName = newName
                 onChanged()

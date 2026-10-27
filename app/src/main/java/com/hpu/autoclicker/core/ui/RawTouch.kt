@@ -1,7 +1,6 @@
 package com.hpu.autoclicker.core.ui
 
 import android.os.SystemClock
-import android.util.Log
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import androidx.compose.runtime.Composable
@@ -11,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalViewConfiguration
+import com.hpu.autoclicker.core.util.DebugLog
 
 /**
  * 悬浮窗按钮的原始触摸点击判定器（替代 Modifier.clickable）
@@ -52,7 +52,7 @@ class RawTapDetector(private val touchSlop: Float) {
                 downRawY = event.rawY
                 downAt = SystemClock.uptimeMillis()
                 isPressed = true
-                Log.d("TouchDiag", "DOWN rawX=${event.rawX} rawY=${event.rawY}")
+                DebugLog.d("TouchDiag", "DOWN rawX=${event.rawX} rawY=${event.rawY}")
                 true
             }
 
@@ -73,7 +73,7 @@ class RawTapDetector(private val touchSlop: Float) {
                 val isLongPress =
                     SystemClock.uptimeMillis() - downAt > ViewConfiguration.getLongPressTimeout().toLong()
                 if (withinSlop && !isLongPress) {
-                    Log.d("TouchDiag", "按钮点击命中 rawX=${event.rawX} rawY=${event.rawY}")
+                    DebugLog.d("TouchDiag", "按钮点击命中 rawX=${event.rawX} rawY=${event.rawY}")
                     onTap()
                 }
                 true

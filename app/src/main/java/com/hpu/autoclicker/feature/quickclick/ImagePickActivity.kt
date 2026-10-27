@@ -14,6 +14,7 @@ import com.hpu.autoclicker.core.theme.Dimens
 import com.hpu.autoclicker.core.ui.createOverlayBarBackground
 import com.hpu.autoclicker.core.ui.createOverlayButton
 import com.hpu.autoclicker.core.ui.liftBottomBarAboveNavigationBar
+import com.hpu.autoclicker.core.util.DebugLog
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -48,6 +49,7 @@ class ImagePickActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DebugLog.syncFrom(this)
         // 裁剪页按返回键：回传「未选择」并关闭本页，让配置弹框恢复显示
         onBackPressedDispatcher.addCallback(this) { finishWithResult(null) }
         pickLauncher.launch(
@@ -56,16 +58,22 @@ class ImagePickActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        // 兜底：若中途被关闭而未走 finishWithResult，也必须通知服务恢复弹框
-        if (!resultDelivered && isFinishing) {
+        // 兜底：若中途被关闭而未走 finishWithResult，也必须通知服务恢复弹框。
+        // 不看 isFinishing：被系统回收 / 配置变更销毁时同样要通知，否则服务的
+        // capturePending 一直是真，隐藏的悬浮窗与弹框再也回不来。
+        if (!resultDelivered) {
             pendingResult?.invoke(null, 0, 0)
             pendingResult = null
         }
         super.onDestroy()
+        // 底图最长边 1600、ARGB_8888 约 10MB，不主动回收要等 GC 才释放
+        cropSource?.takeIf { !it.isRecycled }?.recycle()
+        cropSource = null
     }
 
     /** 用 RegionSelectView + 底部栏 作为 Activity 内容，完成相册图裁剪 */
     private fun showCropper(source: android.graphics.Bitmap) {
+        cropSource = source
         val overlay = FrameLayout(this)
         val sv = RegionSelectView(this).apply { setSource(source) }
         overlay.addView(
@@ -90,6 +98,9 @@ class ImagePickActivity : ComponentActivity() {
             val name = ImageStore.generateFileName("pick")
             val saved = ImageStore.saveImage(this@ImagePickActivity, cropped, name)
             finishWithResult(if (saved) name else null, cropped.width, cropped.height)
+            // 裁剪结果是 createBitmap 新建的位图，写入完成后由本页回收；
+            // 极端情况下选框铺满整图会拿回 source 本身，那种情况留给 onDestroy 收
+            if (cropped !== cropSource) cropped.recycle()
         }
         btnCancel.layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
             marginEnd = dp(8)
@@ -128,6 +139,9 @@ class ImagePickActivity : ComponentActivity() {
 
     /** 是否已经回传结果；防止返回键与 onDestroy 重复回调 */
     private var resultDelivered = false
+
+    /** 相册解码出来的裁剪底图（最长边 1600，数 MB），退出本页时回收 */
+    private var cropSource: android.graphics.Bitmap? = null
 
     private fun finishWithResult(name: String?, w: Int = 0, h: Int = 0) {
         if (resultDelivered) {

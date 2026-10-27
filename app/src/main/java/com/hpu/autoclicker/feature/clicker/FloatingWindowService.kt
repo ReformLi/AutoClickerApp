@@ -1,6 +1,7 @@
 package com.hpu.autoclicker.feature.clicker
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.app.AlertDialog
 import android.app.Notification
 import android.app.NotificationChannel
@@ -13,12 +14,15 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.PixelFormat
+import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import com.hpu.autoclicker.core.util.DebugLog
+import com.hpu.autoclicker.core.util.ScriptNaming
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -58,6 +62,14 @@ import kotlin.jvm.java
  * 4. 操作栏内的按钮可绑定自定义功能（示例中退出按钮可关闭服务）
  */
 class FloatingWindowService : Service() {
+
+    companion object {
+        /** 双击两下的按压时长：不用 0，0 时长容易被系统判为无效手势 */
+        private const val DOUBLE_TAP_PRESS_MS = 50L
+
+        /** 两次按压之间的抬起间隔 */
+        private const val DOUBLE_TAP_GAP_MS = 100L
+    }
 
     // WindowManager 用于管理悬浮窗的显示、位置和参数
     private lateinit var windowManager: WindowManager
@@ -108,11 +120,13 @@ class FloatingWindowService : Service() {
     private var lastScreenH = 0
 
 
-    private var pointCount = 0                   // 当前编号计数
-
-    companion object {
-        val clickPoints = mutableListOf<ClickPoint>()   // 静态点击按钮列表
-    }
+    /**
+     * 当前悬浮的点位标记。
+     * 原来是 companion object 里的静态列表：服务被系统重建（START_STICKY / 快速关-开）时，
+     * 旧实例残留的视图仍留在列表里，removeView 会对着已销毁的窗口报错，
+     * 且新实例看不到真正挂在屏幕上的那些点。
+     */
+    private val clickPoints = mutableListOf<ClickPoint>()
 
     // 运行状态（读写统一落到 ui 状态，UI 自动刷新启动/停止图标与按钮可用性）
     private var isRunning: Boolean
@@ -120,7 +134,9 @@ class FloatingWindowService : Service() {
         set(value) { ui.isRunning = value }
     private val runHandler = Handler(Looper.getMainLooper())
 
-    private var pairCount = 0
+    /** 本轮运行中是否有手势被系统拒绝；下一轮开始时中断并提示 */
+    private var gestureRejected = false
+
     // 用 pairId 映射管道视图及其参数
     private val pipeMap = mutableMapOf<Int, Pair<PipeLineView, WindowManager.LayoutParams>>()
 
@@ -140,7 +156,8 @@ class FloatingWindowService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d("FloatingWindow", "Service onCreate")
+        DebugLog.syncFrom(this)
+        DebugLog.d("FloatingWindow", "Service onCreate")
 
         // 获取 WindowManager 系统服务
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -192,7 +209,7 @@ class FloatingWindowService : Service() {
         // Compose 内容在 addView 之前无法测量，折叠态高度固定为「8dp 间距 + 40dp 主按钮 + 8dp 间距」= 56dp，
         // 用它估算初始居中位置（后续布局完成后再由 toggleExpanded/snapToEdge 校正）
         val h = dp(56)
-        Log.d("FloatingWindow", "初始高度估算：高=$h")
+        DebugLog.d("FloatingWindow", "初始高度估算：高=$h")
 
         // 设置初始位置：左侧吸附，垂直居中
         layoutParams.gravity = Gravity.START or Gravity.TOP  // 以屏幕左上角为原点
@@ -210,7 +227,7 @@ class FloatingWindowService : Service() {
         // 将悬浮窗添加到窗口管理器
         try {
             windowManager.addView(rootView, layoutParams)
-            Log.d("FloatingWindow", "addView 成功")
+            DebugLog.d("FloatingWindow", "addView 成功")
         } catch (e: Exception) {
             Log.e("FloatingWindow", "addView 失败", e)
         }
@@ -387,17 +404,19 @@ class FloatingWindowService : Service() {
         // 发送广播通知 Activity 服务已停止
         val broadcastIntent = Intent("com.hpu.autoclicker.SERVICE_STOPPED").setPackage(packageName)
         sendBroadcast(broadcastIntent)
+        // overlay 弹框窗口不随服务销毁自动移除，先统一收掉，避免留在桌面上点不掉
+        ServiceDialogs.dismissAll(this)
         stopRunning()
         isRunning = false
         runHandler.removeCallbacksAndMessages(null)
         for (point in clickPoints) {
-            windowManager.removeView(point.view)
+            releasePoint(point)
         }
         clickPoints.clear()
         if (::rootView.isInitialized) {
-            windowManager.removeView(rootView)
+            removeWindowQuietly(rootView)
         }
-        pipeMap.values.forEach { (lineView, _) -> windowManager.removeView(lineView) }
+        pipeMap.values.forEach { (lineView, _) -> removeWindowQuietly(lineView) }
         pipeMap.clear()
         pointSettingsDialog?.dismiss()
         pointSettingsDialog = null
@@ -417,6 +436,9 @@ class FloatingWindowService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP_CLICKING") {
             stopRunning()
+            // 与代点器 / 录点器一致：由「停止」指令进来的这次启动不再粘回，
+            // 否则服务被系统杀掉后会重建出一个用户认为已经关掉的悬浮窗
+            return START_NOT_STICKY
         }
         return START_STICKY
     }
@@ -581,9 +603,20 @@ class FloatingWindowService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * 下一个点位编号：当前最大 id + 1。
+     * 原来用可回退的 pointCount 分配，滑动终点会占用一个 id 又把计数减回去，
+     * 于是新增点常与已存在的「B」重号；而运行顺序与保存顺序都按 id 排，
+     * 表现为点位顺序错乱（ClickPoint 里那句「id 并无唯一」说的就是这件事）。
+     */
+    private fun nextPointId(): Int = (clickPoints.maxOfOrNull { it.id } ?: 0) + 1
+
+    /** 下一个滑动对编号：同样从已存在的 pairId 推导，删除后不会撞号 */
+    private fun nextPairId(): Int =
+        (clickPoints.filter { it.pairId != -1 }.maxOfOrNull { it.pairId } ?: 0) + 1
+
     private fun addClickPoint(pairId: Int,isStart: Boolean) : ClickPoint {
-        pointCount++
-        val id = pointCount
+        val id = nextPointId()
         var label : String
         var xAxis : Float
 
@@ -602,7 +635,6 @@ class FloatingWindowService : Service() {
             }else{
                 label = "B$pairId"
                 xAxis = baseX + 100
-                pointCount--
             }
         }
         // 创建带编号的点位标记
@@ -677,27 +709,47 @@ class FloatingWindowService : Service() {
         if (last.pairId != -1) {
             val pairId = last.pairId
             val pointsToRemove = clickPoints.filter { it.pairId == pairId }
-            pointsToRemove.forEach { windowManager.removeView(it.view) }
+            pointsToRemove.forEach { releasePoint(it) }
             clickPoints.removeAll(pointsToRemove)
 
             // 移除管道
             pipeMap[pairId]?.let { (lineView, _) ->
-                windowManager.removeView(lineView)
+                removeWindowQuietly(lineView)
             }
             pipeMap.remove(pairId)
             Toast.makeText(this, "已删除滑动对", Toast.LENGTH_SHORT).show()
         } else {
             // 普通点，直接删除
             clickPoints.remove(last)
-            windowManager.removeView(last.view)
+            releasePoint(last)
             Toast.makeText(this, "已删除点击点 ${last.id}", Toast.LENGTH_SHORT).show()
         }
-        // 删除点击节点后，总节点数减一
-        pointCount--
+        // 编号改成从现存点位推导，删除后不需要再回退计数
+    }
+
+    /** 摘掉一个点位窗口，同时取消它排队中的长按计时 */
+    private fun releasePoint(point: ClickPoint) {
+        point.dragHandler?.removeCallbacksAndMessages(null)
+        point.dragHandler = null
+        removeWindowQuietly(point.view)
+    }
+
+    /**
+     * removeView 对「没挂着的视图」在部分系统版本上抛 IllegalArgumentException，
+     * 而不是仅打印日志。服务销毁 / 批量删除时一旦被抛断，后面的窗口就都摘不掉了。
+     */
+    private fun removeWindowQuietly(view: View) {
+        try {
+            windowManager.removeView(view)
+        } catch (e: Exception) {
+            Log.e("FloatingWindow", "移除悬浮视图失败", e)
+        }
     }
 
     private fun setupPointDrag(view: View, params: WindowManager.LayoutParams, point: ClickPoint) {
         val longPressHandler = Handler(Looper.getMainLooper())
+        // 交给点位保存：删除点位时要取消还在排队的长按，否则已删除的点仍会弹出设置框
+        point.dragHandler = longPressHandler
         var longPressRunnable: Runnable? = null
         var isDragging = false
         var isLongPressed = false
@@ -805,8 +857,7 @@ class FloatingWindowService : Service() {
     }
 
     private fun addSwipePair() {
-        pairCount = pointCount + 1
-        val pairId = pairCount
+        val pairId = nextPairId()
 
         // 1. 创建管道视图和参数
         val lineView = PipeLineView(this)
@@ -820,7 +871,7 @@ class FloatingWindowService : Service() {
 
         // 3. 添加起点和终点节点（后添加的节点会覆盖在管道上方）
         val startPoint = addClickPoint(pairId, true)
-        val endPoint = addClickPoint(pairId, false)
+        addClickPoint(pairId, false)
 
         // 4. 更新管道位置和尺寸，使其连接两个节点 。等节点布局完成后再更新管道，避免 width == 0
         startPoint.view.post {
@@ -970,13 +1021,52 @@ class FloatingWindowService : Service() {
                 return@postDelayed
             }
 
-            service.performClick(x, y, clickDuration)
+            // 手势结果异步回来，可能晚于下面的 postDelayed，所以只置标记、由下一轮开头中断
+            service.performClick(x, y, clickDuration) { ok ->
+                if (!ok) gestureRejected = true
+            }
 
             runHandler.postDelayed({
                 setHighlight(point.view, false)
                 onFinished()
             }, clickDuration + 80)
         }, 80)
+    }
+
+    /**
+     * 手势被系统取消 / 提交失败时中断整轮连点：
+     * 继续跑只是对着点不动的界面空转，用户看到的却是「在运行却没反应」。
+     */
+    private fun breakOnRejectedGesture(): Boolean {
+        if (!gestureRejected) return false
+        gestureRejected = false
+        stopRunning()
+        Toast.makeText(
+            this,
+            "手势被系统取消，点击未生效。请检查目标界面的防误触设置或无障碍服务",
+            Toast.LENGTH_LONG,
+        ).show()
+        return true
+    }
+
+    /** 双击手势：同一个 GestureDescription 里两条首尾相接的短按 stroke */
+    private fun buildDoubleClickGesture(x: Float, y: Float): GestureDescription {
+        fun tapPath() = Path().apply {
+            moveTo(x, y)
+            lineTo(x + 0.5f, y)   // 极小位移，避免被识别成滑动
+        }
+        return GestureDescription.Builder()
+            .addStroke(
+                GestureDescription.StrokeDescription(tapPath(), 0, DOUBLE_TAP_PRESS_MS)
+            )
+            .addStroke(
+                GestureDescription.StrokeDescription(
+                    tapPath(),
+                    DOUBLE_TAP_PRESS_MS + DOUBLE_TAP_GAP_MS,
+                    DOUBLE_TAP_PRESS_MS,
+                )
+            )
+            .build()
     }
 
     private fun startRunning() {
@@ -991,6 +1081,7 @@ class FloatingWindowService : Service() {
         }
 
         isRunning = true
+        gestureRejected = false
         syncLayoutMode()   // 运行态只剩停止按钮，行数变化后重新判断横排 / 竖排
         // 透明度沿用用户设置，不在这里强制半透明
         stopBtnWindowRect = Rect()
@@ -1043,6 +1134,15 @@ class FloatingWindowService : Service() {
         var loopDone = 0   // 已经完成的轮数
         fun performRound(currentIndex: Int) {
             if (!isRunning) return
+            if (breakOnRejectedGesture()) return
+            // 无障碍服务可能在运行中途被关掉或被系统断开。握着旧实例继续
+            // dispatchGesture 只会静默失败，表现为「在运行却毫无反应」，所以每轮重新取一次。
+            val svc = AutoClickerAccessibilityService.instance
+            if (svc == null) {
+                stopRunning()
+                Toast.makeText(this, "无障碍服务已断开，请到系统设置重新开启", Toast.LENGTH_LONG).show()
+                return
+            }
             if (currentIndex >= sortedPoints.size) {
                 loopDone++
                 if (maxLoopCount > 0 && loopDone >= maxLoopCount) {
@@ -1064,11 +1164,12 @@ class FloatingWindowService : Service() {
                 (Math.random() * point.randomDistance * 2 - point.randomDistance).toFloat()
             } else 0f
 
-            val targetX = centerX + randomX
-            val targetY = centerY + randomY
+            // 落在屏幕外的坐标会被系统直接判为无效手势，先在屏内夹一次
+            val targetX = (centerX + randomX).coerceIn(1f, getScreenWidth() - 1f)
+            val targetY = (centerY + randomY).coerceIn(1f, getScreenHeight() - 1f)
 
             // 根据类型执行点击（目前主要用点击）
-            Log.d("startRunning point.type", point.type)
+            DebugLog.d("startRunning point.type", point.type)
             when (point.type) {
                 "点击", "长按" -> {
                     var remaining = point.repeatCount
@@ -1079,8 +1180,8 @@ class FloatingWindowService : Service() {
                             }, point.delay)
                             return
                         }
-                        Log.d("ClickDebug", "点击: x=$targetX, y=$targetY, duration=${point.touchDuration}, service=${service != null}")
-                        performPointClick(service, point, targetX, targetY, point.touchDuration) {
+                        DebugLog.d("ClickDebug", "点击: x=$targetX, y=$targetY, duration=${point.touchDuration}")
+                        performPointClick(svc, point, targetX, targetY, point.touchDuration) {
                             remaining--
                             runHandler.postDelayed({
                                 doAction()
@@ -1113,7 +1214,9 @@ class FloatingWindowService : Service() {
 
                             runHandler.postDelayed({
                                 // 调用优化后的 performSwipe
-                                service.performSwipe(startCx, startCy, endCx, endCy, point.touchDuration)
+                                svc.performSwipe(startCx, startCy, endCx, endCy, point.touchDuration) { ok ->
+                                    if (!ok) gestureRejected = true
+                                }
 
                                 // 手势执行后恢复显示状态
                                 runHandler.postDelayed({
@@ -1149,29 +1252,32 @@ class FloatingWindowService : Service() {
                             windowManager.updateViewLayout(point.view, params)
                         }
                         runHandler.postDelayed({
-                            service.performClick(targetX, targetY, 50)
+                            // 两次点击放进同一个 GestureDescription：
+                            // 分两次 dispatch 会被系统当成两个独立手势，第二次常被丢弃，只剩单击效果
+                            val gesture = buildDoubleClickGesture(targetX, targetY)
+                            val submitted = svc.dispatchInjectedGesture(gesture) { ok ->
+                                if (!ok) gestureRejected = true
+                            }
+                            if (!submitted) gestureRejected = true
+                            remaining--
                             runHandler.postDelayed({
-                                service.performClick(targetX, targetY, 50)
-                                remaining--
-                                runHandler.postDelayed({
-                                    setHighlight(point.view, false)
-                                    doDouble()
-                                }, point.touchDuration + 50)
-                            }, 100)  // 双击间隔100ms
+                                setHighlight(point.view, false)
+                                doDouble()
+                            }, point.touchDuration + 50)
                         }, 80)
                     }
                     doDouble()
                 }
                 "返回键" -> {
-                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                    svc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
                     runHandler.postDelayed({ performRound(currentIndex + 1) }, point.delay)
                 }
                 "主页键" -> {
-                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+                    svc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
                     runHandler.postDelayed({ performRound(currentIndex + 1) }, point.delay)
                 }
                 "打开通知栏" -> {
-                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
+                    svc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
                     runHandler.postDelayed({ performRound(currentIndex + 1) }, point.delay)
                 }
                 else -> {
@@ -1350,10 +1456,13 @@ class FloatingWindowService : Service() {
     /** 点击点设置保存（原 btnSave.setOnClickListener 内的逻辑，逐条保留） */
     private fun savePointSettings(point: ClickPoint, form: PointSettingsFormState) {
         point.name = form.name.ifBlank { "点 ${point.id}" }
-        point.delay = form.delay.toLongOrNull() ?: 0
-        point.touchDuration = form.touchDuration.toLongOrNull() ?: 300
-        point.repeatCount = form.repeatCount.toIntOrNull() ?: 1
-        point.randomDistance = form.randomDistance.toIntOrNull() ?: 0
+        // 输入框可以留空或填出离谱值：0 延迟会让循环变成忙等，超大时长会整轮卡在同一个手势上
+        point.delay = ClickerPointData.clampDelay(form.delay.toLongOrNull() ?: 0)
+        point.touchDuration =
+            ClickerPointData.clampTouchDuration(form.touchDuration.toLongOrNull() ?: 300)
+        point.repeatCount = ClickerPointData.clampRepeatCount(form.repeatCount.toIntOrNull() ?: 1)
+        point.randomDistance =
+            ClickerPointData.clampRandomDistance(form.randomDistance.toIntOrNull() ?: 0)
         if (point.pairId == -1) {
             point.type = form.type   // 普通点的类型由单选决定
         }
@@ -1382,7 +1491,7 @@ class FloatingWindowService : Service() {
             return
         }
         // 从脚本加载来的点位，预填该脚本名（可改可直接保存）
-        showInputDialog("保存脚本", currentScriptName ?: "", "输入脚本名称", 12) { scriptName ->
+        showInputDialog("保存脚本", currentScriptName ?: "", "输入脚本名称", ScriptNaming.MAX_NAME_LENGTH) { scriptName ->
             if (ClickerScriptStore.loadScripts(this).any { it.name == scriptName }) {
                 showConfirmDialog(
                     title = "覆盖脚本",
@@ -1422,7 +1531,7 @@ class FloatingWindowService : Service() {
 
     /** 「改名」：重命名脚本（新名已存在则提示） */
     private fun handleRenameScript(script: ClickerScript, onChanged: () -> Unit) {
-        showInputDialog("重命名脚本", script.name, "输入新名称", 12) { newName ->
+        showInputDialog("重命名脚本", script.name, "输入新名称", ScriptNaming.MAX_NAME_LENGTH) { newName ->
             if (ClickerScriptStore.renameScript(this, script.name, newName)) {
                 if (currentScriptName == script.name) currentScriptName = newName
                 onChanged()
@@ -1482,24 +1591,25 @@ class FloatingWindowService : Service() {
             )
         }
 
-    /** 移除所有点位与管道视图，重置编号计数 */
+    /** 移除所有点位与管道视图 */
     private fun removeAllPoints() {
         for (p in clickPoints) {
-            windowManager.removeView(p.view)
+            releasePoint(p)
         }
         clickPoints.clear()
         for ((_, pipePair) in pipeMap) {
-            windowManager.removeView(pipePair.first)
+            removeWindowQuietly(pipePair.first)
         }
         pipeMap.clear()
-        pointCount = 0
     }
 
     /** 按保存顺序重建点位（还原流程与旧「打开点击文件」保持一致） */
     private fun restorePoints(points: List<ClickerPointData>) {
+        // 滑动对按「起点 + 紧随其后的终点」成对还原，pairId 由当前点位推导，不复用存档里的编号
+        var pendingPairId = -1
         for (data in points) {
-            if (data.pairId != -1) {
-                val pairId = if (data.isStart) pointCount + 1 else pointCount
+            if (data.pairId != -1 && (data.isStart || pendingPairId != -1)) {
+                val pairId = if (data.isStart) nextPairId().also { pendingPairId = it } else pendingPairId
                 if (data.isStart) {
                     // 先创建管道并加入窗口（位于节点下层）
                     val lineView = PipeLineView(this)
@@ -1512,8 +1622,10 @@ class FloatingWindowService : Service() {
                 val point = addClickPoint(pairId, data.isStart)
                 applyLoadedPoint(point, data)
                 movePoint(point, data.x, data.y, !data.isStart)
+                if (!data.isStart) pendingPairId = -1
             } else {
-                // 普通点击点
+                // 普通点击点（缺起点的孤立终点也按普通点还原，避免空指针）
+                pendingPairId = -1
                 val point = addClickPoint(-1, true)
                 applyLoadedPoint(point, data)
                 movePoint(point, data.x, data.y, false)
@@ -1740,7 +1852,7 @@ class FloatingWindowService : Service() {
 
 // 点击点数据类
 data class ClickPoint(
-    val id: Int,  // 并无唯一
+    val id: Int,  // 悬浮窗内唯一编号，运行顺序与保存顺序都按它排
     var x: Float,
     var y: Float,
     var view: View,
@@ -1756,5 +1868,7 @@ data class ClickPoint(
     var params: WindowManager.LayoutParams? = null,
     // 新字段：滑动对ID和角色
     var pairId: Int = -1,        // -1 表示不属于滑动对
-    var isStart: Boolean = false // 滑动对中的起点 true，终点 false
+    var isStart: Boolean = false, // 滑动对中的起点 true，终点 false
+    /** 拖动 / 长按计时用的 Handler，删除点位时必须取消，否则已删点位仍会弹出设置框 */
+    var dragHandler: Handler? = null
 )

@@ -24,6 +24,16 @@ import com.hpu.autoclicker.core.theme.AutoClickerTheme
 object ServiceDialogs {
 
     /**
+     * 服务 → 当前还挂着的弹框。
+     *
+     * TYPE_APPLICATION_OVERLAY 的弹框窗口不随 Service 销毁自动移除，
+     * 服务被杀 / 用户切模块后，弹框会留在桌面上点不掉（只能重装或重启）。
+     * 这里登记在显的弹框，由服务的 onDestroy 统一 dismissAll 收掉；
+     * 弹框正常关闭时会自行出登记，所以列表为空后 map 条目也一并删掉，不会留引用。
+     */
+    private val openDialogs = HashMap<Service, MutableList<AlertDialog>>()
+
+    /**
      * 弹出一个统一外框的对话框。
      *
      * @param widthRatio 窗口宽度占屏宽比例（弹框内部靠 fillMaxWidth 铺满）
@@ -50,7 +60,10 @@ object ServiceDialogs {
         // 窗口根视图挂宿主 Owner（必须在 show() 之前，原因见 ServiceComposeHost.attachWindowRoot）
         dialog.window?.decorView?.let { host.attachWindowRoot(it) }
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
-        dialog.setOnDismissListener { onDismiss?.invoke() }
+        dialog.setOnDismissListener {
+            forgetDialog(service, dialog)
+            onDismiss?.invoke()
+        }
 
         dialog.window?.setType(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
@@ -67,7 +80,39 @@ object ServiceDialogs {
             ViewGroup.LayoutParams.WRAP_CONTENT,
         )
         dialog.stripPlatformPanel()
+        openDialogs.getOrPut(service) { mutableListOf() }.add(dialog)
         return dialog
+    }
+
+    /**
+     * 外部自建的 overlay 弹框（不走 [show]）也登记进来，关闭时同样要调
+     * [reportDismissed]，否则服务销毁时会被重复 dismiss。
+     */
+    fun track(service: Service, dialog: AlertDialog) {
+        openDialogs.getOrPut(service) { mutableListOf() }.add(dialog)
+    }
+
+    /** 外部自建弹框的关闭上报 */
+    fun reportDismissed(service: Service, dialog: AlertDialog) {
+        forgetDialog(service, dialog)
+    }
+
+    /** 服务销毁前调用：收掉本服务还挂着的所有弹框窗口 */
+    fun dismissAll(service: Service) {
+        val dialogs = openDialogs.remove(service) ?: return
+        for (dialog in dialogs) {
+            try {
+                if (dialog.isShowing) dialog.dismiss()
+            } catch (e: Exception) {
+                android.util.Log.e("ServiceDialogs", "服务销毁时关闭弹框失败", e)
+            }
+        }
+    }
+
+    private fun forgetDialog(service: Service, dialog: AlertDialog) {
+        val dialogs = openDialogs[service] ?: return
+        dialogs.remove(dialog)
+        if (dialogs.isEmpty()) openDialogs.remove(service)
     }
 
     private fun screenWidth(service: Service): Int {

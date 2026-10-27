@@ -2,7 +2,6 @@ package com.hpu.autoclicker.core.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Point
@@ -11,11 +10,14 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.hpu.autoclicker.core.util.DebugLog
 import android.view.Display
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import kotlin.math.pow
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
 
 /**
@@ -28,25 +30,28 @@ class AutoClickerAccessibilityService : AccessibilityService() {
         private const val TAG = "ClickService"
         /** 节点树递归上限，防止异常深的树把栈打爆 */
         private const val MAX_TREE_DEPTH = 60
+        /** takeScreenshot 的兜底超时：系统既不回成功也不回失败时按失败收场 */
+        private const val SCREENSHOT_TIMEOUT_MS = 3000L
         // 静态实例，方便悬浮窗控制
         var instance: AutoClickerAccessibilityService? = null
             private set
     }
 
-    // 定时器
+    /** 主线程 Handler：截图结果等异步回调统一切回主线程 */
     private val handler = Handler(Looper.getMainLooper())
-    private var clickRunnable: Runnable? = null
 
-    // 连点参数
-    private var clickInterval = 100L      // 点击间隔（毫秒）
-    private var targetX = 0f              // 目标 X 坐标（屏幕像素）
-    private var targetY = 0f              // 目标 Y 坐标
-    private var isClicking = false        // 是否正在连点
+    /**
+     * 截图回读用的后台线程。
+     * 全屏硬件缓冲转 ARGB_8888 约 10MB 拷贝，放在 mainExecutor 上每次截屏都卡主线程，
+     * 表现为悬浮窗与录制小条掉帧。
+     */
+    private val screenshotExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        Log.d(TAG, "无障碍服务已连接")
+        DebugLog.syncFrom(this)
+        DebugLog.d(TAG, "无障碍服务已连接")
     }
 
 
@@ -55,71 +60,21 @@ class AutoClickerAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        Log.d(TAG, "服务中断")
-        stopClicking()
+        DebugLog.d(TAG, "服务中断")
     }
 
     override fun onDestroy() {
         super.onDestroy()
         instance = null
-        stopClicking()
+        screenshotExecutor.shutdownNow()
     }
 
     /**
-     * 开始连点
-     * @param x 屏幕 X 坐标（像素）
-     * @param y 屏幕 Y 坐标
-     * @param interval 点击间隔时间（毫秒），默认 100ms
+     * 在指定坐标注入一次点击手势。
+     * 连点循环不在这里：三个模块各自的节奏由自己的 Handler 驱动，本类只负责提交手势。
      */
-    fun startClicking(x: Float, y: Float, interval: Long = 100) {
-        if (isClicking) return
-        targetX = x
-        targetY = y
-        clickInterval = interval
-        isClicking = true
-
-        clickRunnable = object : Runnable {
-            override fun run() {
-                if (!isClicking) return
-                performClick(targetX, targetY)
-                handler.postDelayed(this, clickInterval)
-            }
-        }
-        handler.post(clickRunnable!!)
-        Log.d(TAG, "开始连点：($targetX, $targetY) 间隔 ${interval}ms")
-    }
-
-    /**
-     * 停止连点
-     */
-    fun stopClicking() {
-        isClicking = false
-        clickRunnable?.let { handler.removeCallbacks(it) }
-        clickRunnable = null
-        Log.d(TAG, "停止连点")
-    }
-
-    /**
-     * 更新点击坐标（无需停止）
-     */
-    fun updateCoordinate(x: Float, y: Float) {
-        targetX = x
-        targetY = y
-    }
-
-    /**
-     * 更新点击间隔（单位：毫秒）
-     */
-    fun updateInterval(interval: Long) {
-        clickInterval = interval
-        // 如果需要立即生效，可以重启循环
-        if (isClicking) {
-            stopClicking()
-            startClicking(targetX, targetY, clickInterval)
-        }
-    }
     fun performClick(x: Float, y: Float, duration: Long = 300, onResult: ((Boolean) -> Unit)? = null) {
-        Log.d("点击位置", ""+x+" "+y)
+        DebugLog.d("点击位置", ""+x+" "+y)
         val clickDuration = duration.coerceAtLeast(50L)
 
         // 坐标连点应优先使用无障碍手势，确保点击发生在用户设置的精确坐标。
@@ -134,7 +89,7 @@ class AutoClickerAccessibilityService : AccessibilityService() {
                 .build()
             val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
                 override fun onCompleted(desc: GestureDescription?) {
-                    Log.d("ClickDebug", "手势点击成功: x=$x, y=$y")
+                    DebugLog.d("ClickDebug", "手势点击成功: x=$x, y=$y")
                     onResult?.invoke(true)
                 }
 
@@ -154,7 +109,7 @@ class AutoClickerAccessibilityService : AccessibilityService() {
         val node = findClickableNodeAt(x, y)
         if (node != null) {
             val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            Log.d("ClickDebug", "控件点击回退结果: $clicked")
+            DebugLog.d("ClickDebug", "控件点击回退结果: $clicked")
             node.recycle()
             onResult?.invoke(clicked)
         } else {
@@ -245,7 +200,7 @@ class AutoClickerAccessibilityService : AccessibilityService() {
             ?.first
             ?.let { return centerOf(it, rect) }
 
-        Log.i(TAG, "文本未命中「$targetText」，窗口=${root.packageName}，可见文字=${visibleTexts(root)}")
+        DebugLog.i(TAG, "文本未命中「$targetText」，窗口=${root.packageName}，可见文字=${visibleTexts(root)}")
         return null
     }
 
@@ -399,7 +354,14 @@ class AutoClickerAccessibilityService : AccessibilityService() {
         return findNodeAt(root, x.toInt(), y.toInt())
     }
 
-    private fun findNodeAt(node: AccessibilityNodeInfo, x: Int, y: Int): AccessibilityNodeInfo? {
+    private fun findNodeAt(
+        node: AccessibilityNodeInfo,
+        x: Int,
+        y: Int,
+        depth: Int = 0,
+    ): AccessibilityNodeInfo? {
+        // 递归上限：异常深的节点树（WebView / 套壳应用）会直接把栈打爆
+        if (depth > MAX_TREE_DEPTH) return null
         val rect = android.graphics.Rect()
         node.getBoundsInScreen(rect)
         if (rect.contains(x, y) && node.isClickable) {
@@ -407,15 +369,29 @@ class AutoClickerAccessibilityService : AccessibilityService() {
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val result = findNodeAt(child, x, y)
+            val result = findNodeAt(child, x, y, depth + 1)
             if (result != null) return result
+            child.recycle()   // 没命中的子节点随手回收，命中的交给调用方回收
         }
         return null
     }
 
-    fun performSwipe(startX: Float, startY: Float, endX: Float, endY: Float, duration: Long = 500) {
+    /**
+     * 连点器的滑动注入。
+     * @param onResult 手势是否真正落到系统（提交失败或被系统取消回 false）；
+     *                 「滑动距离过短」属于参数问题，按原行为静默返回，不回 false 中断整轮连点。
+     */
+    fun performSwipe(
+        startX: Float,
+        startY: Float,
+        endX: Float,
+        endY: Float,
+        duration: Long = 500,
+        onResult: ((Boolean) -> Unit)? = null,
+    ) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
             Log.w("SwipeDebug", "当前系统版本不支持无障碍手势滑动")
+            onResult?.invoke(false)
             return
         }
 
@@ -445,7 +421,7 @@ class AutoClickerAccessibilityService : AccessibilityService() {
 
         val swipeDuration = duration.coerceAtLeast(200L)
 
-        Log.d("SwipeDebug", "执行滑动: ($safeStartX,$safeStartY) → ($safeEndX,$safeEndY), duration=$swipeDuration")
+        DebugLog.d("SwipeDebug", "执行滑动: ($safeStartX,$safeStartY) → ($safeEndX,$safeEndY), duration=$swipeDuration")
 
         val path = Path().apply {
             moveTo(safeStartX, safeStartY)
@@ -457,33 +433,19 @@ class AutoClickerAccessibilityService : AccessibilityService() {
 
         val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(desc: GestureDescription?) {
-                Log.d("SwipeDebug", "滑动成功")
+                DebugLog.d("SwipeDebug", "滑动成功")
+                onResult?.invoke(true)
             }
             override fun onCancelled(desc: GestureDescription?) {
                 Log.e("SwipeDebug", "滑动被系统取消，可能被系统手势区域、权限状态或目标应用拦截")
+                onResult?.invoke(false)
             }
         }, null)
 
         if (!dispatched) {
             Log.e("SwipeDebug", "dispatchGesture 返回 false，滑动手势未提交")
+            onResult?.invoke(false)
         }
-    }
-
-    /**
-     * 兼容旧版本的点击方法（通过 AccessibilityNodeInfo）
-     * 注意：该方法只在视图控件上有效，纯坐标点击可能不生效
-     */
-    private fun performClickLegacy(x: Float, y: Float) {
-        val root = rootInActiveWindow ?: return
-        val node = root.findAccessibilityNodeInfosByViewId(x.toInt().toString()) // 简单例子，实际不推荐
-        // 更健壮的方式是遍历所有可点击节点找到坐标对应的节点，这里略
-    }
-
-    /**
-     * 检查无障碍服务是否已开启
-     */
-    fun isServiceEnabled(): Boolean {
-        return instance != null
     }
 
     /** 截图能力是否可用（依赖无障碍 takeScreenshot，仅 Android 11 / API 30+） */
@@ -491,6 +453,8 @@ class AutoClickerAccessibilityService : AccessibilityService() {
 
     /**
      * 异步截取当前屏幕，结果回调到主线程；失败或不支持时回调 null。
+     * 回调保证只发生一次（超时后系统又回了成功，则把图回收掉不再上报）。
+     *
      * @param onResult 截图 Bitmap（ARGB_8888，可安全像素读取）或 null
      */
     fun takeScreenshotAsync(onResult: (Bitmap?) -> Unit) {
@@ -499,32 +463,59 @@ class AutoClickerAccessibilityService : AccessibilityService() {
             handler.post { onResult(null) }
             return
         }
+        // takeScreenshot 在部分机型上被静默丢弃（截屏服务限流 / 刚断连），
+        // 两个回调都不来。没有超时兜底的话调用方的「等截图」状态会一直挂着。
+        val delivered = AtomicBoolean(false)
+        val timeout = Runnable {
+            if (delivered.compareAndSet(false, true)) {
+                Log.w(TAG, "takeScreenshot 超时未回调")
+                handler.post { onResult(null) }
+            }
+        }
+        handler.postDelayed(timeout, SCREENSHOT_TIMEOUT_MS)
+
+        /** 把结果切回主线程送出；已被超时抢跑时返回 false，由调用方回收资源 */
+        fun deliver(bitmap: Bitmap?): Boolean {
+            if (!delivered.compareAndSet(false, true)) {
+                bitmap?.recycle()
+                return false
+            }
+            handler.removeCallbacks(timeout)
+            handler.post { onResult(bitmap) }
+            return true
+        }
+
         try {
+            // 回读放在后台线程：全屏硬件缓冲转 ARGB_8888 约 10MB，主线程做会掉帧
             takeScreenshot(
                 Display.DEFAULT_DISPLAY,
-                mainExecutor,
+                screenshotExecutor,
                 object : TakeScreenshotCallback {
                     override fun onSuccess(screenshot: ScreenshotResult) {
                         // 硬件缓冲需 close，先转成软件 ARGB Bitmap 供匹配引擎读取
                         val hwBuffer = screenshot.hardwareBuffer
-                        val bitmap = try {
+                        val hardwareBitmap = try {
                             Bitmap.wrapHardwareBuffer(hwBuffer, screenshot.colorSpace)
-                                ?.copy(Bitmap.Config.ARGB_8888, false)
                         } finally {
                             hwBuffer.close()
                         }
-                        handler.post { onResult(bitmap) }
+                        val bitmap = try {
+                            hardwareBitmap?.copy(Bitmap.Config.ARGB_8888, false)
+                        } finally {
+                            hardwareBitmap?.recycle()
+                        }
+                        deliver(bitmap)
                     }
 
                     override fun onFailure(errorCode: Int) {
                         Log.e(TAG, "截图失败 errorCode=$errorCode")
-                        handler.post { onResult(null) }
+                        deliver(null)
                     }
                 }
             )
         } catch (e: Exception) {
             Log.e(TAG, "takeScreenshot 调用异常", e)
-            handler.post { onResult(null) }
+            deliver(null)
         }
     }
 }

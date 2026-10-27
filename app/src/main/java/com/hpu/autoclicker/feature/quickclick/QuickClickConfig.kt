@@ -3,6 +3,7 @@ package com.hpu.autoclicker.feature.quickclick
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -95,6 +96,14 @@ data class QuickClickConfig(
         const val MAX_SWIPE_DURATION = 2000L
         const val MAX_RANDOM_RADIUS = 50
 
+        /** 图像匹配参数边界（读盘与弹框输入共用） */
+        const val MIN_IMAGE_THRESHOLD = 0f
+        const val MAX_IMAGE_THRESHOLD = 1f
+        const val MIN_IMAGE_SCALE = 1
+        const val MAX_IMAGE_SCALE = 4
+        const val MAX_IMAGE_RETRY_COUNT = 5
+        const val MAX_IMAGE_RETRY_DELAY = 5_000L
+
         /** 滑动距离上限：屏幕短边的一半（至少保留最小值，避免小屏上区间为空） */
         fun maxSwipeDistance(screenWidth: Int, screenHeight: Int): Int =
             (minOf(screenWidth, screenHeight) / 2).coerceAtLeast(MIN_SWIPE_DISTANCE)
@@ -119,12 +128,13 @@ data class QuickClickConfig(
                 x = o.optDouble("x", 0.0).toFloat(),
                 y = o.optDouble("y", 0.0).toFloat(),
                 imageFileName = o.optString("imageFileName", ""),
-                imageThreshold = o.optDouble("imageThreshold", 0.80).toFloat(),
-                imageScale = o.optInt("imageScale", 2),
+                imageThreshold = o.optDouble("imageThreshold", 0.80).toFloat()
+                    .coerceIn(MIN_IMAGE_THRESHOLD, MAX_IMAGE_THRESHOLD),
+                imageScale = o.optInt("imageScale", 2).coerceIn(MIN_IMAGE_SCALE, MAX_IMAGE_SCALE),
                 imageRegion = o.optString("imageRegion", "full"),
                 imageGrayMode = o.optBoolean("imageGrayMode", true),
-                imageRetryCount = o.optInt("imageRetryCount", 1),
-                imageRetryDelay = o.optLong("imageRetryDelay", 300L),
+                imageRetryCount = o.optInt("imageRetryCount", 1).coerceIn(0, MAX_IMAGE_RETRY_COUNT),
+                imageRetryDelay = o.optLong("imageRetryDelay", 300L).coerceIn(0L, MAX_IMAGE_RETRY_DELAY),
                 imageRegionRect = o.optString("imageRegionRect", ""),
                 actionType = actionType,
                 doubleClickInterval = (params?.optLong("interval", 150L) ?: 150L)
@@ -207,40 +217,74 @@ object QuickClickStore {
 
     private const val PREFS = "quick_click_config"
     private const val KEY_SCRIPTS = "scripts"
-    private const val KEY_CLICK_DURATION = "click_duration"   // 手势点击时长 ms
+    private const val KEY_SCRIPTS_BACKUP = "scripts_unreadable_backup"
     private const val KEY_DEBOUNCE = "debounce"               // 防抖间隔 ms
     private const val KEY_WINDOW_ALPHA = "window_alpha"       // 悬浮窗不透明度 [0.2, 1]
+    private const val TAG = "QuickClick"
 
     /** 不透明度下限：留一点可见度，避免调成全透明后无法再找到悬浮窗 */
     const val MIN_WINDOW_ALPHA = 0.2f
 
+    /** 脚本数量与单个脚本按钮数量上限：防无限增长 */
+    const val MAX_SCRIPTS = 50
+    const val MAX_CONFIGS_PER_SCRIPT = 50
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /** 一次读取的结果；skipped>0 表示列表不完整，覆盖写前必须留档（见 keepBackupIfLossy） */
+    private class ScriptRead(val scripts: MutableList<QuickScript>, val raw: String?, val skipped: Int) {
+        val lossy: Boolean get() = skipped > 0
+    }
+
     /** 读取全部已保存脚本 */
-    fun loadScripts(context: Context): MutableList<QuickScript> {
+    fun loadScripts(context: Context): MutableList<QuickScript> = readScripts(context).scripts
+
+    private fun readScripts(context: Context): ScriptRead {
+        val raw = prefs(context).getString(KEY_SCRIPTS, null)
+            ?: return ScriptRead(mutableListOf(), null, 0)
         val list = mutableListOf<QuickScript>()
-        var needsMigration = false
-        try {
-            val json = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY_SCRIPTS, null) ?: return list
-            val arr = JSONArray(json)
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                val cfgArr = o.optJSONArray("configs") ?: JSONArray()
-                val configs = mutableListOf<QuickClickConfig>()
-                for (j in 0 until cfgArr.length()) {
-                    val cfgObj = cfgArr.getJSONObject(j)
-                    // 旧版本没有动作字段：读取时补默认值（点击 / 随机偏移开 / 5px）；
-                    // 旧版本遗留的 autoCollapse 字段也借这次回写一并清掉，后续再读不会重复写
-                    if (!cfgObj.has("actionType") || cfgObj.has("autoCollapse")) needsMigration = true
-                    configs.add(QuickClickConfig.fromJson(cfgObj))
-                }
-                list.add(QuickScript(o.optString("name", "脚本"), configs))
-            }
+        val arr = try {
+            JSONArray(raw)
         } catch (e: Exception) {
-            android.util.Log.e("QuickClick", "脚本读取失败", e)
-            return list
+            android.util.Log.e(TAG, "脚本整体解析失败", e)
+            return ScriptRead(list, raw, 1)
         }
-        if (needsMigration) persist(context, list)
-        return list
+        var skipped = 0
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i)
+            if (o == null) {
+                skipped++
+                continue
+            }
+            val cfgArr = o.optJSONArray("configs") ?: JSONArray()
+            val configs = mutableListOf<QuickClickConfig>()
+            for (j in 0 until cfgArr.length()) {
+                val cfgObj = cfgArr.optJSONObject(j)
+                if (cfgObj == null) {
+                    skipped++
+                    continue
+                }
+                runCatching { QuickClickConfig.fromJson(cfgObj) }
+                    .onSuccess { configs.add(it) }
+                    .onFailure { skipped++ }
+            }
+            // 旧版本缺字段由 fromJson 补默认值，不再借「读取」触发一次整表回写
+            list.add(QuickScript(o.optString("name", "脚本"), configs))
+        }
+        return ScriptRead(list, raw, skipped)
+    }
+
+    /** 坏条目读不出来时，先把磁盘上的原始串留一份档，覆盖写才不至于把没读到的脚本永久删掉 */
+    private fun keepBackupIfLossy(context: Context, read: ScriptRead) {
+        if (!read.lossy || read.raw == null) return
+        val p = prefs(context)
+        if (p.contains(KEY_SCRIPTS_BACKUP)) return
+        p.edit().putString(KEY_SCRIPTS_BACKUP, read.raw).apply()
+        android.util.Log.e(TAG, "脚本数据有 ${read.skipped} 条未能读出，覆盖写前已留原始备份")
+        Toast.makeText(
+            context, "脚本文档有损坏条目，本次覆盖写前已自动备份原始数据", Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun persist(context: Context, scripts: List<QuickScript>) {
@@ -255,53 +299,82 @@ object QuickClickStore {
                 }
                 arr.put(o)
             }
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putString(KEY_SCRIPTS, arr.toString()).apply()
+            prefs(context).edit().putString(KEY_SCRIPTS, arr.toString()).apply()
         } catch (e: Exception) {
-            android.util.Log.e("QuickClick", "脚本保存失败", e)
+            android.util.Log.e(TAG, "脚本保存失败", e)
         }
     }
 
-    /** 另存为：脚本名已存在则覆盖 */
-    fun saveScript(context: Context, name: String, configs: List<QuickClickConfig>) {
-        val scripts = loadScripts(context)
+    /** 删除候选图片里已经不再被任何脚本引用的那些 */
+    private fun deleteUnreferencedImages(
+        context: Context,
+        candidates: List<String>,
+        stillSaved: List<QuickScript>,
+    ) {
+        val referenced = stillSaved.flatMap { it.configs }
+            .mapTo(HashSet()) { it.imageFileName }
+        candidates.filter { it.isNotEmpty() && it !in referenced }
+            .forEach { ImageStore.deleteImage(context, it) }
+    }
+
+    /**
+     * 另存为：脚本名已存在则覆盖，并清理被替换脚本遗留下来的孤儿模板图。
+     * 超出上限时拒绝写入并提示（不做静默截断，避免用户以为已保存）。
+     */
+    fun saveScript(context: Context, name: String, configs: List<QuickClickConfig>): Boolean {
+        val read = readScripts(context)
+        keepBackupIfLossy(context, read)
+        val scripts = read.scripts
         val idx = scripts.indexOfFirst { it.name == name }
+        if (idx < 0 && scripts.size >= MAX_SCRIPTS) {
+            Toast.makeText(context, "脚本数量已达上限 $MAX_SCRIPTS，请先删除部分脚本", Toast.LENGTH_LONG).show()
+            return false
+        }
+        if (configs.size > MAX_CONFIGS_PER_SCRIPT) {
+            Toast.makeText(context, "单个脚本最多 $MAX_CONFIGS_PER_SCRIPT 个按钮", Toast.LENGTH_LONG).show()
+            return false
+        }
+        val replacedImages = scripts.getOrNull(idx)?.configs
+            ?.filter { it.type == QuickClickConfig.TYPE_IMAGE }
+            ?.map { it.imageFileName }
+            ?: emptyList()
         val script = QuickScript(name, configs.toList())
         if (idx >= 0) scripts[idx] = script else scripts.add(script)
         persist(context, scripts)
+        if (idx >= 0) deleteUnreferencedImages(context, replacedImages, scripts)
+        return true
     }
 
     fun deleteScript(context: Context, name: String) {
-        val scripts = loadScripts(context)
+        val read = readScripts(context)
+        keepBackupIfLossy(context, read)
+        val scripts = read.scripts
         // 清理该脚本下图像按钮引用的图片文件
-        scripts.find { it.name == name }?.configs
-            ?.filter { it.type == QuickClickConfig.TYPE_IMAGE && it.imageFileName.isNotEmpty() }
-            ?.forEach { ImageStore.deleteImage(context, it.imageFileName) }
+        val images = scripts.find { it.name == name }?.configs
+            ?.filter { it.type == QuickClickConfig.TYPE_IMAGE }
+            ?.map { it.imageFileName }
+            ?: emptyList()
         scripts.removeAll { it.name == name }
         persist(context, scripts)
+        deleteUnreferencedImages(context, images, scripts)
     }
 
     /** 重命名脚本；新名已被占用时返回 false */
     fun renameScript(context: Context, oldName: String, newName: String): Boolean {
-        val scripts = loadScripts(context)
+        val read = readScripts(context)
+        val scripts = read.scripts
         if (scripts.any { it.name == newName && it.name != oldName }) return false
         val idx = scripts.indexOfFirst { it.name == oldName }
         if (idx < 0) return false
+        keepBackupIfLossy(context, read)
         scripts[idx] = scripts[idx].copy(name = newName)
         persist(context, scripts)
         return true
     }
 
-    /** 手势点击时长，默认 80ms */
-    fun getClickDuration(context: Context): Int {
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getInt(KEY_CLICK_DURATION, 80)
-    }
-
     /** 防抖间隔，默认 500ms */
     fun getDebounce(context: Context): Long {
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getLong(KEY_DEBOUNCE, 500L)
+        return prefs(context).getLong(KEY_DEBOUNCE, 500L)
     }
 
     /** 悬浮窗不透明度，默认 1f（完全不透明） */

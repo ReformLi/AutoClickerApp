@@ -2,6 +2,7 @@ package com.hpu.autoclicker.feature.recorder
 
 import android.content.Context
 import android.system.Os
+import com.hpu.autoclicker.core.util.ScriptNaming
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -158,7 +159,7 @@ data class RecorderScript(
         const val MAX_REPEAT = 999
         const val MAX_SCRIPT_STEPS = 2000
         const val MAX_RECORD_STEPS = 500
-        const val MAX_NAME_LENGTH = 16
+        const val MAX_NAME_LENGTH = ScriptNaming.MAX_NAME_LENGTH
 
         fun newEmpty(name: String, screenW: Int, screenH: Int, orientation: Int): RecorderScript =
             RecorderScript(
@@ -211,6 +212,7 @@ object RecorderStore {
 
     private const val PREFS = "recorder_config"
     private const val KEY_SCRIPTS = "scripts"
+    private const val KEY_SCRIPTS_BACKUP = "scripts_unreadable_backup"
     private const val KEY_SPEED = "speed"
     private const val KEY_WINDOW_ALPHA = "window_alpha"
     private const val TAG = "RecorderStore"
@@ -221,25 +223,52 @@ object RecorderStore {
     /** 回放速度档位：数值 = 倍速，等待时间按倍速相除 */
     val SPEEDS = listOf(0.5f, 1.0f, 1.5f, 2.0f)
 
-    fun loadScripts(context: Context): MutableList<RecorderScript> {
-        val list = mutableListOf<RecorderScript>()
-        return try {
-            val json = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY_SCRIPTS, null) ?: return list
-            val arr = JSONArray(json)
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                RecorderScript.fromJson(o)?.let { list.add(it) }
-            }
-            list
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "脚本读取失败", e)
-            list
-        }
+    /**
+     * 一次读取的结果。
+     * @param skipped 没能读出来的条目数（结构损坏或 schema 版本比当前 App 还新）；
+     *                >0 说明这份列表不完整，覆盖写前必须先留档，否则会把没读到的脚本永久删掉。
+     */
+    private class ScriptRead(val scripts: MutableList<RecorderScript>, val raw: String?, val skipped: Int) {
+        val lossy: Boolean get() = skipped > 0
     }
 
-    fun getScript(context: Context, id: String): RecorderScript? =
-        loadScripts(context).firstOrNull { it.id == id }
+    fun loadScripts(context: Context): MutableList<RecorderScript> = readScripts(context).scripts
+
+    private fun readScripts(context: Context): ScriptRead {
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_SCRIPTS, null) ?: return ScriptRead(mutableListOf(), null, 0)
+        val list = mutableListOf<RecorderScript>()
+        val arr = try {
+            JSONArray(raw)
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "脚本整体解析失败", e)
+            return ScriptRead(list, raw, 1)
+        }
+        var skipped = 0
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i)
+            if (o == null) {
+                skipped++
+                continue
+            }
+            // 允许 0 步脚本原样读回：结构合法，只是不可运行，不能算损坏条目
+            val script = RecorderScript.fromJson(o, allowEmpty = true)
+            if (script == null) skipped++ else list.add(script)
+        }
+        return ScriptRead(list, raw, skipped)
+    }
+
+    /** 坏条目读不出来时，先把磁盘上的原始串留一份档，覆盖写才不至于把没读到的脚本永久删掉 */
+    private fun keepBackupIfLossy(context: Context, read: ScriptRead) {
+        if (!read.lossy || read.raw == null) return
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (p.contains(KEY_SCRIPTS_BACKUP)) return
+        p.edit().putString(KEY_SCRIPTS_BACKUP, read.raw).apply()
+        android.util.Log.e(TAG, "脚本数据有 ${read.skipped} 条未能读出，覆盖写前已留原始备份")
+        android.widget.Toast.makeText(
+            context, "脚本文档有损坏条目，本次覆盖写前已自动备份原始数据", android.widget.Toast.LENGTH_LONG
+        ).show()
+    }
 
     /** 按 id 覆盖保存，不存在则新增；返回补齐 updatedAt 后的脚本 */
     fun saveScript(context: Context, script: RecorderScript): RecorderScript {
@@ -252,7 +281,9 @@ object RecorderStore {
             steps = script.steps.take(RecorderScript.MAX_SCRIPT_STEPS),
             updatedAt = System.currentTimeMillis(),
         )
-        val scripts = loadScripts(context)
+        val read = readScripts(context)
+        keepBackupIfLossy(context, read)
+        val scripts = read.scripts
         val index = scripts.indexOfFirst { it.id == normalized.id }
         if (index >= 0) scripts[index] = normalized else scripts.add(normalized)
         persist(context, scripts)
@@ -260,9 +291,16 @@ object RecorderStore {
     }
 
     fun deleteScript(context: Context, id: String) {
-        val scripts = loadScripts(context)
+        val read = readScripts(context)
+        keepBackupIfLossy(context, read)
+        val scripts = read.scripts
         scripts.removeAll { it.id == id }
         persist(context, scripts)
+        // 草稿与回放现场里若正是这个脚本，一并清掉：
+        // session 内嵌整个脚本副本，不清会把已删脚本在下次启动时「复活」成当前脚本
+        RecorderStateStore.loadDraft(context)?.let { if (it.id == id) RecorderStateStore.clearDraft(context) }
+        RecorderStateStore.loadSession(context)
+            ?.let { if (it.script.id == id) RecorderStateStore.clearSession(context) }
     }
 
     /** 不重名的默认脚本名：脚本 1、脚本 2 … */

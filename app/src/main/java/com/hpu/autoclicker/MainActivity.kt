@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.setContent
@@ -30,6 +31,7 @@ import com.hpu.autoclicker.feature.main.MainUiState
 import com.hpu.autoclicker.feature.quickclick.QuickClickService
 import com.hpu.autoclicker.feature.recorder.RecorderService
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
+import com.hpu.autoclicker.core.util.DebugLog
 
 class MainActivity : AppCompatActivity() {
 
@@ -40,6 +42,9 @@ class MainActivity : AppCompatActivity() {
         // 旧版本的 old / new 由 AppMode.fromPref 自动迁移
         private const val MODE_PREFS = "feature_mode"
         private const val MODE_KEY = "mode"
+
+        /** 启停 / 切模块两次点击之间的最短间隔 */
+        private const val TOGGLE_GAP_MS = 600L
     }
 
     /** 切模块时等待旧服务先移除悬浮窗，再启动目标模块 */
@@ -55,6 +60,22 @@ class MainActivity : AppCompatActivity() {
     private var isServiceRunning = false
 
     /**
+     * 启停/切模块按钮的连点保护时刻。
+     * 悬浮窗服务创建与销毁都是异步的：连点「启动/停止」会交叉发出
+     * startForegroundService 与 stopService，出现「按钮显示已停止但悬浮窗还在」；
+     * 连点切模块同理会让两个悬浮窗叠着起来。
+     */
+    private var lastToggleAt = 0L
+
+    /** 距上次启停/切模块是否已过了最短间隔；过了就顺带记下本次时刻 */
+    private fun toggleAccepted(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastToggleAt < TOGGLE_GAP_MS) return false
+        lastToggleAt = now
+        return true
+    }
+
+    /**
      * 通知栏「停止」入口依赖前台服务通知，Android 13(API 33) 起需要用户授权。
      * 拒绝授权不影响悬浮窗本身运行，因此不阻断启动流程。
      */
@@ -65,6 +86,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DebugLog.syncFrom(this)
         // 全面屏适配：窗口铺满到系统栏之下（状态栏/导航栏/刘海区域），
         // 由 Compose 侧按 safeDrawing 内边距避让，避免全面屏设备上状态栏遮盖页面内容。
         enableEdgeToEdge()
@@ -80,8 +102,10 @@ class MainActivity : AppCompatActivity() {
                     },
                     onSwitchMode = { mode -> requestSwitchMode(mode) },
                     onToggleService = {
-                        if (isServiceRunning) stopFloatingService() else startFloatingService()
-                        updateToggleButton()
+                        if (toggleAccepted()) {
+                            if (isServiceRunning) stopFloatingService() else startFloatingService()
+                            updateToggleButton()
+                        }
                     },
                 )
             }
@@ -123,6 +147,8 @@ class MainActivity : AppCompatActivity() {
             toast("无障碍服务未开启，无法切换模块")
             return
         }
+        // 权限提示可以连点重试；真正要动服务了才吃防抖，避免两个模块的悬浮窗叠着起来
+        if (!toggleAccepted()) return
 
         val wasRunning = isServiceRunning || isFloatingServiceRunning(serviceClassOf(current))
         if (wasRunning) {

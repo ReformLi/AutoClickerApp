@@ -42,8 +42,16 @@ class RegionCaptureOverlay(
     private var selectView: RegionSelectView? = null
     private var currentRect = Rect()
 
+    /**
+     * 交给 [RegionSelectView] 绘制的全屏底图。
+     * 由本浮层负责回收：一次截屏 ARGB_8888 约 10MB，只靠 GC 释放的话，
+     * 连续几次「屏幕截图 → 框选」就能让进程内存涨到被系统低内存杀进程。
+     */
+    private var source: Bitmap? = null
+
     /** 底图为屏幕截图时，选框像素坐标即屏幕坐标；为相册图时无屏幕坐标语义，仅回传裁剪图 */
     fun show(source: Bitmap) {
+        this.source = source
         // 浮层窗口无 Activity 承载，返回键需在根视图上自行拦截
         val overlay = object : FrameLayout(context) {
             override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -136,6 +144,7 @@ class RegionCaptureOverlay(
             liftBottomBarAboveNavigationBar(bottom)
         } catch (e: Exception) {
             android.util.Log.e("RegionCapture", "addView 失败", e)
+            dismiss()          // 窗口没挂上也要把底图回收，否则每次失败都漏一张全屏图
             listener.onCancel()
         }
     }
@@ -155,5 +164,7 @@ class RegionCaptureOverlay(
         }
         root = null
         selectView = null
+        source?.takeIf { !it.isRecycled }?.recycle()
+        source = null
     }
 }

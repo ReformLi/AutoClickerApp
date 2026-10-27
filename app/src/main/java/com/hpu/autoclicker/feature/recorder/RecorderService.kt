@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
 import com.hpu.autoclicker.core.accessibility.AutoClickerAccessibilityService
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
+import com.hpu.autoclicker.core.util.DebugLog
 import com.hpu.autoclicker.core.ui.FloatingWindowBounds
 import com.hpu.autoclicker.core.ui.OpacityDragPreview
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
@@ -118,6 +119,8 @@ class RecorderService : Service() {
 
     private var captureOverlay: RecorderCaptureOverlay? = null
     private var replayTimeout: Runnable? = null
+    /** 回显代号：每录一步 +1，用来识别并丢弃上一步迟到的注入/回调 */
+    private var replayGeneration = 0
     private var opacityPreview: OpacityDragPreview? = null
 
     private val handler = Handler(Looper.getMainLooper())
@@ -197,6 +200,7 @@ class RecorderService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        DebugLog.syncFrom(this)
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         touchSlop = ViewConfiguration.get(this).scaledTouchSlop
 
@@ -280,6 +284,8 @@ class RecorderService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        // overlay 弹框窗口不随服务销毁自动移除，先统一收掉，避免留在桌面上点不掉
+        ServiceDialogs.dismissAll(this)
         replayTimeout?.let { handler.removeCallbacks(it) }
         replayTimeout = null
         if (recordSession == RecordSession.RECORDING || recordSession == RecordSession.PAUSED) {
@@ -712,19 +718,26 @@ class RecorderService : Service() {
         val gesture = buildRecorderGesture(step) ?: return
         val overlay = captureOverlay ?: return
 
+        // 每一步占一个代号：上一步的延迟注入块与手势回调可能在新的这一步之后才跑到，
+        // 只按 recordSession 判断的话会把「这一步」的效果错记到「下一步」头上
+        val generation = ++replayGeneration
         replayTimeout?.let { handler.removeCallbacks(it) }
         overlay.setTouchable(false)
         val timeout = Runnable {
             replayTimeout = null
-            if (recordSession == RecordSession.RECORDING) overlay.setTouchable(true)
+            if (generation == replayGeneration && recordSession == RecordSession.RECORDING) {
+                overlay.setTouchable(true)
+            }
         }
         replayTimeout = timeout
         handler.postDelayed(timeout, INJECTION_SWITCH_DELAY_MS + step.duration.coerceAtLeast(50L) + 900L)
         // 等一帧让 NOT_TOUCHABLE 生效，否则注入手势会被捕获层吞掉，看不到回显
         handler.postDelayed({
+            if (generation != replayGeneration) return@postDelayed
             if (recordSession != RecordSession.RECORDING) return@postDelayed
             svc.dispatchInjectedGesture(gesture) {
                 handler.post {
+                    if (generation != replayGeneration) return@post
                     handler.removeCallbacks(timeout)
                     if (replayTimeout === timeout) replayTimeout = null
                     if (recordSession == RecordSession.RECORDING) overlay.setTouchable(true)
@@ -1176,6 +1189,7 @@ class RecorderService : Service() {
     // ==================== 启动时恢复草稿 / 回放现场 ====================
 
     private fun restorePersistedState() {
+        reloadScripts()   // 先建好 id 缓存，恢复现场时要用 isSaved
         val session = RecorderStateStore.loadSession(this)
         if (session != null) {
             restoreSession(session)
@@ -1187,6 +1201,12 @@ class RecorderService : Service() {
 
     private fun restoreSession(session: RecorderPlaybackSession) {
         val script = session.script
+        if (!isSaved(script.id)) {
+            // 现场内嵌的是已被删除的脚本（旧版本删除时未级联清理会留下这种现场）：
+            // 丢掉现场并保持编辑态，不能让它「复活」成当前脚本
+            RecorderStateStore.clearSession(this)
+            return
+        }
         applyCurrentScript(script)
         ui.mode = RecorderPanelMode.RUNNING
         ui.isExpanded = true
@@ -1256,7 +1276,9 @@ class RecorderService : Service() {
     // ==================== 脚本管理 ====================
 
     private fun showScriptManagerDialog() {
-        val scriptsState = mutableStateOf(RecorderStore.loadScripts(this))
+        val scriptsState = mutableStateOf(reloadScripts())
+        // 草稿只在打开弹框时读一次：放在 composable 里会随每次重组重读文件
+        val hasDraftAtOpen = RecorderStateStore.loadDraft(this) != null
         var dialogRef: AlertDialog? = null
         var host: ServiceComposeHost? = null
         val composeHost = ServiceComposeHost().also { host = it }
@@ -1269,7 +1291,7 @@ class RecorderService : Service() {
             RecorderScriptManagerDialog(
                 scripts = scriptsState.value,
                 currentId = currentScript?.id,
-                hasDraft = RecorderStateStore.loadDraft(this) != null,
+                hasDraft = hasDraftAtOpen,
                 canSaveCurrent = (currentScript?.steps?.size ?: 0) > 0,
                 onLoad = { script ->
                     dialogRef?.dismiss()
@@ -1281,7 +1303,7 @@ class RecorderService : Service() {
                         initial = script.name,
                         hint = "输入新名称",
                     ) { newName ->
-                        val conflict = RecorderStore.loadScripts(this)
+                        val conflict = reloadScripts()
                             .firstOrNull { it.name == newName && it.id != script.id }
                         if (conflict != null) {
                             toast("脚本名「$newName」已存在")
@@ -1293,7 +1315,7 @@ class RecorderService : Service() {
                             ui.scriptName = renamed.name
                             ui.scriptSaved = true
                         }
-                        scriptsState.value = RecorderStore.loadScripts(this)
+                        scriptsState.value = reloadScripts()
                         toast("已重命名为「$newName」")
                     }
                 },
@@ -1308,7 +1330,7 @@ class RecorderService : Service() {
                         if (currentScript?.id == script.id) {
                             applyCurrentScript(null)
                         }
-                        scriptsState.value = RecorderStore.loadScripts(this)
+                        scriptsState.value = reloadScripts()
                         toast("已删除脚本「${script.name}」")
                     }
                 },
@@ -1329,7 +1351,7 @@ class RecorderService : Service() {
                             saveScriptNamed(script, name) { saved ->
                                 applyCurrentScript(saved)
                                 ui.draftAvailable = false
-                                scriptsState.value = RecorderStore.loadScripts(this)
+                                scriptsState.value = reloadScripts()
                                 toast("已保存脚本「${saved.name}」")
                             }
                         }
@@ -1409,10 +1431,16 @@ class RecorderService : Service() {
             toast("名称不能为空")
             return
         }
-        val conflict = RecorderStore.loadScripts(this)
+        val conflict = reloadScripts()
             .firstOrNull { it.name == trimmed && it.id != script.id }
         val save = {
             val saved = RecorderStore.saveScript(this, script.copy(name = trimmed))
+            // 覆盖时旧脚本连同它的 id 一起消失，新 id 必须进缓存，
+            // 否则 isSaved 会说「未保存」，脚本被当成草稿重复提示恢复
+            savedScriptIds = savedScriptIds.toMutableSet().apply {
+                conflict?.let { remove(it.id) }
+                add(saved.id)
+            }
             // 草稿与已保存脚本是同一份内容时即失效，否则下次启动会重复提示恢复
             if (RecorderStateStore.loadDraft(this)?.id == saved.id) {
                 discardDraft()
@@ -1611,8 +1639,21 @@ class RecorderService : Service() {
         ui.scriptSaved = script != null && isSaved(script.id)
     }
 
-    private fun isSaved(id: String): Boolean =
-        RecorderStore.loadScripts(this).any { it.id == id }
+    /**
+     * 已保存脚本的 id 缓存。
+     * isSaved 会被 UI 刷新、启动确认、草稿恢复等多处调用，
+     * 每次都全量读文件并解析所有脚本 JSON 太贵（主线程）。
+     */
+    private var savedScriptIds: Set<String> = emptySet()
+
+    /** 读取脚本列表并同步刷新 id 缓存；列表直接给 UI 用，避免二次解析 */
+    private fun reloadScripts(): List<RecorderScript> {
+        val scripts = RecorderStore.loadScripts(this)
+        savedScriptIds = scripts.mapTo(HashSet()) { it.id }
+        return scripts
+    }
+
+    private fun isSaved(id: String): Boolean = id in savedScriptIds
 
     private fun persistDraft() {
         val script = recordingScript ?: return

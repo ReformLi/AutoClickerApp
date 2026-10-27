@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.Rect
 import android.util.Log
+import com.hpu.autoclicker.core.util.DebugLog
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -103,7 +104,7 @@ object ImageMatcher {
             // 映射回原始屏幕坐标（窗口中心）
             val origX = (best.x + tw / 2f) * s
             val origY = (best.y + th / 2f) * s
-            Log.d(
+            DebugLog.d(
                 TAG,
                 "匹配完成: score=${best.score} at ($origX,$origY) 模板=${template.width}x${template.height} " +
                     "scale=${s}x gray=$grayMode",

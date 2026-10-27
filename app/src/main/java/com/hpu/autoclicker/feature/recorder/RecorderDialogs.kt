@@ -32,6 +32,7 @@ import com.hpu.autoclicker.core.components.AppScriptList
 import com.hpu.autoclicker.core.components.AppSegmentedControl
 import com.hpu.autoclicker.core.components.AppTextField
 import com.hpu.autoclicker.core.theme.Dimens
+import com.hpu.autoclicker.core.util.ScriptNaming
 
 /**
  * 录点器弹框集合。外框、按钮、间距全部复用统一组件，
@@ -203,20 +204,17 @@ private class RecorderNameState(initial: String) {
 }
 
 /**
- * 脚本名限长：与代点器的按钮名一致——含中文 ≤3 字，纯英文 / 数字 ≤6 字符。
- * 悬浮窗上的信息条只有 40dp 见方，超过这个长度就只能靠缩字号，观感会碎。
+ * 脚本名限长：三个模块统一取 [ScriptNaming.MAX_NAME_LENGTH]。
+ * 信息条放不下时由 UI 自动缩字号，不再按中英文分别截断——
+ * 否则同一个脚本在录点器只许 6 字、在另外两个模块许 12 字，规则互相打架。
  */
-internal fun recorderNameMaxLength(text: CharSequence): Int =
-    if (text.any { it.code > 0x2E80 }) 3 else 6
-
-/** 名称输入的硬限制：超长部分直接由输入框丢弃，避免状态回灌滞后导致漏截 */
 internal val RecorderNameInputFilter = InputFilter { source, start, end, dest, dstart, dend ->
     val result = buildString {
         append(dest, 0, dstart)
         append(source, start, end)
         append(dest, dend, dest.length)
     }
-    val max = recorderNameMaxLength(result)
+    val max = ScriptNaming.MAX_NAME_LENGTH
     if (result.length <= max) {
         null
     } else {
@@ -266,7 +264,7 @@ fun RecorderNameDialog(
             inputFilter = RecorderNameInputFilter,
         )
         AppCaption(
-            text = "中文最多 3 个字，英文 / 数字最多 6 个字符",
+            text = "最多 ${ScriptNaming.MAX_NAME_LENGTH} 个字符",
             modifier = Modifier.padding(top = Dimens.space4),
         )
         state.error?.let {
