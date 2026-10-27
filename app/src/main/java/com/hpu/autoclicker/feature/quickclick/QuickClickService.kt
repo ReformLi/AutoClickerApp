@@ -63,7 +63,9 @@ import kotlin.random.Random
  *
  * 三种状态：
  * - 折叠态：屏幕上只有一个总按钮，零编辑控件；单击 → 展开
- * - 展开态：总按钮 + 已配置子按钮纵向排列；再单击总按钮 → 折叠
+ * - 展开态（运行）：总按钮 + 已配置子按钮纵向排列；再单击总按钮 → 折叠
+ *   子按钮单击执行配置动作；长按 / 滑动不算点击，会回放给下层应用
+ *   （按钮遮挡的区域照样能长按、滚动），总按钮不参与透传。
  * - 编辑态：双击总按钮进入；展开区显示 [+][脚本管理][透明度][关闭]；
  *   “+”弹框新建按钮，单击子按钮打开修改/删除弹框，长按拖动调整顺序；
  *   “关闭”关闭悬浮窗（有未保存按钮时先提示保存）
@@ -89,6 +91,15 @@ class QuickClickService : Service() {
 
         /** 点击 / 双击的手势按压时长：固定 50ms，不用 0（0 容易被系统判为无效手势） */
         private const val ACTION_TAP_DURATION_MS = 50L
+
+        /** 透传注入前等一帧多，让 NOT_TOUCHABLE 生效，否则注入手势会落回本悬浮窗 */
+        private const val PASS_THROUGH_SWITCH_DELAY_MS = 24L
+
+        /** 透传长按的注入时长：需长于系统长按阈值，下层应用才会识别成长按 */
+        private const val PASS_THROUGH_LONG_PRESS_MS = 800L
+
+        /** 透传滑动的注入时长上限：再长的真实滑动也按该上限回放 */
+        private const val PASS_THROUGH_MAX_SWIPE_MS = 5000L
     }
 
     private lateinit var windowManager: WindowManager
@@ -132,6 +143,23 @@ class QuickClickService : Service() {
     private var dragIndex = -1           // 正在拖动的子按钮在 configs 中的索引
     private var expandedTopInRoot = 0f   // 展开区在根视图内的 Y 偏移（px），用于换算屏幕坐标
     private var expandedLeftInRoot = 0f  // 展开区在根视图内的 X 偏移（px），横排排序用
+
+    // ===== 运行态子按钮手势透传（长按 / 滑动交给下层应用） =====
+    /** 透传注入进行中：窗口已置为不可触摸，吞掉期间落回本窗口的触摸 */
+    private var passThroughInjecting = false
+    /** 本次运行态手势按下的子按钮索引（-1 表示没有进行中的手势） */
+    private var passThroughIndex = -1
+    private var passThroughDownX = 0f
+    private var passThroughDownY = 0f
+    private var passThroughSwipe = false        // 位移已超 touchSlop → 按滑动透传
+    private var passThroughInjected = false     // 本次手势已转成透传（长按先触发）
+    /** 透传滑动轨迹：xy 成对存放 + 对应事件时间（用于回放同一条滑动） */
+    private val passThroughPoints = ArrayList<Float>()
+    private val passThroughTimes = ArrayList<Long>()
+    private var passThroughTimer: Runnable? = null
+    /** 每次透传注入的代号：丢弃超时/迟到的回调，避免旧回调恢复新一次注入的窗口状态 */
+    private var passThroughGeneration = 0
+    private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
 
     /** 当前竖排吸附边缘：true = 左侧，false = 右侧。横竖屏切换后按它重新贴边 */
     private var dockedLeft = true
@@ -192,7 +220,7 @@ class QuickClickService : Service() {
                     onOpenSettings = { showScriptManagerDialog() },
                     onOpenOpacity = { showOpacityDialog() },
                     onCloseWindow = { requestCloseWindow() },
-                    onChildClick = { cfg -> onChildClicked(cfg) },
+                    onChildRunTouch = { index, event -> onChildRunTouch(index, event) },
                     onChildTouch = { index, event -> onChildTouch(index, event) },
                     onExpandedPositioned = { left, top ->
                         expandedLeftInRoot = left
@@ -311,6 +339,7 @@ class QuickClickService : Service() {
      * 由 Compose 的 pointerInteropFilter 回调进来，事件坐标同为屏幕绝对坐标。
      */
     private fun onMainTouch(event: MotionEvent): Boolean {
+        if (passThroughInjecting) return true   // 透传注入期间不响应（避免回放手势点中主按钮）
         return when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downRawX = event.rawX           // 屏幕绝对坐标，防多窗口偏移
@@ -599,60 +628,246 @@ class QuickClickService : Service() {
      * 编辑态子按钮触摸（由 Compose pointerInteropFilter 回调）：
      * - 普通点击：打开「编辑快捷按钮」弹框（内含删除），与新建共用同一套表单；
      * - 长按后移动：拖动排序（长按原地松手不再触发编辑，避免与点击重复打开弹框）。
-     * 未达长按时长的普通点击在非编辑态交给 [onChildClicked] 执行识别/点击。
+     * 运行态触摸不经过这里，由 [onChildRunTouch] 处理（点击 / 长按与滑动透传）。
      * 排序结果直接写回 ui.configs，因此不需要 syncConfigsFromViews()。
      */
-    private fun onChildTouch(index: Int, event: MotionEvent): Boolean = when (event.actionMasked) {
-        MotionEvent.ACTION_DOWN -> {
-            dragStartRawX = event.rawX
-            dragStartRawY = event.rawY
-            dragMoved = false
-            dragActive = false
-            dragIndex = index
-            ui.pressedChildIndex = index                                  // 按下反馈
-            // 展开区左上角的屏幕绝对坐标 = 窗口偏移 + 展开区在根视图内的偏移
-            parentTopOnScreen = lp.y + expandedTopInRoot.toInt()
-            parentLeftOnScreen = lp.x + expandedLeftInRoot.toInt()
-            dragStartRunnable = Runnable {
-                dragActive = true
-                ui.draggingConfig = configs.getOrNull(index)               // 拖动中的按钮浮起
-                ui.dragOffsetY = 0f
-                ui.dragOffsetX = 0f
-            }.also { dragHandler.postDelayed(it, ViewConfiguration.getLongPressTimeout().toLong()) }
-            true
-        }
-        MotionEvent.ACTION_MOVE -> {
-            val dx = event.rawX - dragStartRawX
-            val dy = event.rawY - dragStartRawY
-            if (!dragActive && !dragMoved && dx * dx + dy * dy > touchSlop * touchSlop) {
-                dragMoved = true                   // 一移动就取消长按/拖动判定，本次手势不当作点击
-                ui.pressedChildIndex = -1
+    private fun onChildTouch(index: Int, event: MotionEvent): Boolean {
+        if (passThroughInjecting) return true
+        return when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                dragStartRawX = event.rawX
+                dragStartRawY = event.rawY
+                dragMoved = false
+                dragActive = false
+                dragIndex = index
+                ui.pressedChildIndex = index                                  // 按下反馈
+                // 展开区左上角的屏幕绝对坐标 = 窗口偏移 + 展开区在根视图内的偏移
+                parentTopOnScreen = lp.y + expandedTopInRoot.toInt()
+                parentLeftOnScreen = lp.x + expandedLeftInRoot.toInt()
+                dragStartRunnable = Runnable {
+                    dragActive = true
+                    ui.draggingConfig = configs.getOrNull(index)               // 拖动中的按钮浮起
+                    ui.dragOffsetY = 0f
+                    ui.dragOffsetX = 0f
+                }.also { dragHandler.postDelayed(it, ViewConfiguration.getLongPressTimeout().toLong()) }
+                true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.rawX - dragStartRawX
+                val dy = event.rawY - dragStartRawY
+                if (!dragActive && !dragMoved && dx * dx + dy * dy > touchSlop * touchSlop) {
+                    dragMoved = true                   // 一移动就取消长按/拖动判定，本次手势不当作点击
+                    ui.pressedChildIndex = -1
+                    dragStartRunnable?.let { dragHandler.removeCallbacks(it) }
+                }
+                if (dragActive) {
+                    performChildDrag(event)
+                }
+                true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 dragStartRunnable?.let { dragHandler.removeCallbacks(it) }
+                dragStartRunnable = null
+                ui.pressedChildIndex = -1
+                if (dragActive) {
+                    ui.dragOffsetY = 0f
+                    ui.dragOffsetX = 0f
+                    ui.draggingConfig = null
+                    clampWindow()                      // 落位后校正窗口位置（列表顺序已同步）
+                } else if (!dragMoved && event.actionMasked == MotionEvent.ACTION_UP) {
+                    // 编辑态点击：打开该子按钮的修改/删除弹框
+                    configs.getOrNull(dragIndex)?.let { showConfigDialog(it) }
+                }
+                dragActive = false
+                dragMoved = false
+                dragIndex = -1
+                true
             }
-            if (dragActive) {
-                performChildDrag(event)
-            }
-            true
+            else -> false
         }
-        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-            dragStartRunnable?.let { dragHandler.removeCallbacks(it) }
-            dragStartRunnable = null
+    }
+
+    // ==================== 运行态子按钮手势透传 ====================
+
+    /**
+     * 运行态子按钮触摸：点击执行配置动作；长按 / 滑动不属于点击，
+     * 把这段操作回放到下层应用（悬浮窗临时不可触摸），让被按钮遮住的区域仍能长按、滑动。
+     *
+     * 系统不允许把进行中的触摸流转交给下层窗口，所以只能「识别后重放」：
+     * 长按一达到长按阈值就立即注入，滑动在抬手后按采样轨迹注入。
+     */
+    private fun onChildRunTouch(index: Int, event: MotionEvent): Boolean {
+        if (ui.isEditing) return true           // 编辑态走 onChildTouch（拖动排序）
+        if (passThroughInjecting) return true   // 回放期间吞掉落回本窗口的事件
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                cancelPassThroughTimer()
+                passThroughIndex = index
+                passThroughDownX = event.rawX
+                passThroughDownY = event.rawY
+                passThroughSwipe = false
+                passThroughInjected = false
+                passThroughPoints.clear()
+                passThroughTimes.clear()
+                passThroughPoints.add(event.rawX)
+                passThroughPoints.add(event.rawY)
+                passThroughTimes.add(event.eventTime)
+                ui.pressedChildIndex = index
+                armPassThroughLongPress()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (passThroughIndex < 0) return true
+                val dx = event.rawX - passThroughDownX
+                val dy = event.rawY - passThroughDownY
+                if (!passThroughSwipe && dx * dx + dy * dy > touchSlop * touchSlop) {
+                    passThroughSwipe = true
+                    ui.pressedChildIndex = -1        // 已确认是滑动，取消按下反馈
+                    cancelPassThroughTimer()         // 不再按长按透传，等抬手后整段回放
+                }
+                if (passThroughSwipe && !passThroughInjected &&
+                    event.eventTime - passThroughTimes.last() >= 8L
+                ) {
+                    passThroughPoints.add(event.rawX)
+                    passThroughPoints.add(event.rawY)
+                    passThroughTimes.add(event.eventTime)
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                cancelPassThroughTimer()
+                ui.pressedChildIndex = -1
+                val pressedIndex = passThroughIndex
+                passThroughIndex = -1
+                if (pressedIndex < 0) return true
+                when {
+                    passThroughInjected -> Unit      // 长按已透传
+                    passThroughSwipe -> forwardPassThroughSwipe()
+                    else -> configs.getOrNull(pressedIndex)?.let { onChildClicked(it) }
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                cancelPassThroughTimer()
+                ui.pressedChildIndex = -1
+                passThroughIndex = -1
+            }
+        }
+        return true
+    }
+
+    /** 按下后开始计时：按住不动到长按阈值，就按下层应用的长按处理 */
+    private fun armPassThroughLongPress() {
+        val runnable = Runnable {
+            passThroughTimer = null
+            if (passThroughIndex < 0 || passThroughSwipe || passThroughInjected) return@Runnable
+            passThroughInjected = true
             ui.pressedChildIndex = -1
-            if (dragActive) {
-                ui.dragOffsetY = 0f
-                ui.dragOffsetX = 0f
-                ui.draggingConfig = null
-                clampWindow()                      // 落位后校正窗口位置（列表顺序已同步）
-            } else if (!dragMoved && event.actionMasked == MotionEvent.ACTION_UP) {
-                // 编辑态点击：打开该子按钮的修改/删除弹框
-                configs.getOrNull(dragIndex)?.let { showConfigDialog(it) }
-            }
-            dragActive = false
-            dragMoved = false
-            dragIndex = -1
-            true
+            val gesture = GestureDescription.Builder()
+                .addStroke(
+                    GestureDescription.StrokeDescription(
+                        tapPath(clampGestureX(passThroughDownX), clampGestureY(passThroughDownY)),
+                        0,
+                        PASS_THROUGH_LONG_PRESS_MS,
+                    )
+                )
+                .build()
+            dispatchPassThrough(gesture, PASS_THROUGH_LONG_PRESS_MS)
         }
-        else -> false
+        passThroughTimer = runnable
+        dragHandler.postDelayed(runnable, longPressTimeout)
+    }
+
+    private fun cancelPassThroughTimer() {
+        passThroughTimer?.let { dragHandler.removeCallbacks(it) }
+        passThroughTimer = null
+    }
+
+    /** 把抬手时收集到的轨迹原样回放成一条滑动，让下层列表跟着滚 */
+    private fun forwardPassThroughSwipe() {
+        if (passThroughPoints.size < 4) return   // 至少两个点才构成滑动
+        val duration = (passThroughTimes.last() - passThroughTimes.first())
+            .coerceIn(50L, PASS_THROUGH_MAX_SWIPE_MS)
+        val startX = clampGestureX(passThroughPoints[0])
+        val startY = clampGestureY(passThroughPoints[1])
+        val endX = clampGestureX(passThroughPoints[passThroughPoints.size - 2])
+        val endY = clampGestureY(passThroughPoints[passThroughPoints.size - 1])
+        val path = Path().apply {
+            moveTo(startX, startY)
+            for (i in 2 until passThroughPoints.size step 2) {
+                lineTo(clampGestureX(passThroughPoints[i]), clampGestureY(passThroughPoints[i + 1]))
+            }
+            // 轨迹没动（只触发过一次 MOVE）时补一点位移，避免空路径被判为无效手势
+            if (startX == endX && startY == endY) lineTo(startX + 0.5f, startY)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
+            .build()
+        dispatchPassThrough(gesture, duration)
+    }
+
+    /**
+     * 注入透传手势：先把悬浮窗设为不可触摸（否则注入的手势会被本窗口吞掉），
+     * 等一帧再提交；回调或兜底超时后恢复，期间本窗口的触摸一律忽略。
+     */
+    private fun dispatchPassThrough(gesture: GestureDescription, durationMs: Long) {
+        val svc = AutoClickerAccessibilityService.instance
+        if (svc == null) {
+            setMainAvailable(false)
+            Toast.makeText(this, "无障碍服务未连接，请到系统设置重新开启", Toast.LENGTH_LONG).show()
+            resetPassThroughGesture()
+            return
+        }
+        passThroughInjecting = true
+        setWindowTouchable(false)
+        val generation = ++passThroughGeneration
+        val timeout = Runnable {
+            if (generation == passThroughGeneration) endPassThroughInjection()
+        }
+        dragHandler.postDelayed(timeout, PASS_THROUGH_SWITCH_DELAY_MS + durationMs + 900L)
+        dragHandler.postDelayed({
+            if (!passThroughInjecting || generation != passThroughGeneration) return@postDelayed
+            svc.dispatchQuickGesture(gesture) { ok ->
+                dragHandler.post {
+                    if (generation != passThroughGeneration) return@post
+                    dragHandler.removeCallbacks(timeout)
+                    endPassThroughInjection()
+                    if (!ok) {
+                        Toast.makeText(this, "手势被系统取消，请重试", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }, PASS_THROUGH_SWITCH_DELAY_MS)
+    }
+
+    private fun endPassThroughInjection() {
+        if (!passThroughInjecting) return
+        passThroughInjecting = false
+        resetPassThroughGesture()
+        setWindowTouchable(true)
+    }
+
+    private fun resetPassThroughGesture() {
+        cancelPassThroughTimer()
+        passThroughIndex = -1
+        passThroughSwipe = false
+        passThroughInjected = false
+        passThroughPoints.clear()
+        passThroughTimes.clear()
+        ui.pressedChildIndex = -1
+    }
+
+    /** 透传回放期间让悬浮窗不可触摸，注入的手势才能落到下层应用 */
+    private fun setWindowTouchable(touchable: Boolean) {
+        if (!rootAdded) return
+        lp.flags = if (touchable) {
+            lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        } else {
+            lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        }
+        try {
+            windowManager.updateViewLayout(root, lp)
+        } catch (e: Exception) {
+            android.util.Log.e("QuickClick", "切换悬浮窗可触摸状态失败", e)
+        }
     }
 
     /**

@@ -91,7 +91,11 @@ fun QuickFloatingContent(
     onOpenSettings: () -> Unit,
     onOpenOpacity: () -> Unit,
     onCloseWindow: () -> Unit,
-    onChildClick: (QuickClickConfig) -> Unit,
+    /**
+     * 运行态子按钮原始触摸事件：点击执行配置动作，长按 / 滑动透传给下层应用。
+     * 判定放在 Service 里，因为透传需要手势轨迹和窗口可触摸性切换。
+     */
+    onChildRunTouch: (index: Int, event: MotionEvent) -> Boolean,
     /** 编辑态子按钮原始触摸事件（长按拖动排序） */
     onChildTouch: (index: Int, event: MotionEvent) -> Boolean,
     /** 展开区在根视图中的位置（px），用于拖动排序时换算屏幕坐标 */
@@ -119,7 +123,7 @@ fun QuickFloatingContent(
                         onOpenSettings = onOpenSettings,
                         onOpenOpacity = onOpenOpacity,
                         onCloseWindow = onCloseWindow,
-                        onChildClick = onChildClick,
+                        onChildRunTouch = onChildRunTouch,
                         onChildTouch = onChildTouch,
                         horizontal = true,
                     )
@@ -161,7 +165,7 @@ fun QuickFloatingContent(
                         onOpenSettings = onOpenSettings,
                         onOpenOpacity = onOpenOpacity,
                         onCloseWindow = onCloseWindow,
-                        onChildClick = onChildClick,
+                        onChildRunTouch = onChildRunTouch,
                         onChildTouch = onChildTouch,
                         horizontal = false,
                     )
@@ -208,7 +212,7 @@ private fun ExpandedItems(
     onOpenSettings: () -> Unit,
     onOpenOpacity: () -> Unit,
     onCloseWindow: () -> Unit,
-    onChildClick: (QuickClickConfig) -> Unit,
+    onChildRunTouch: (index: Int, event: MotionEvent) -> Boolean,
     onChildTouch: (index: Int, event: MotionEvent) -> Boolean,
     horizontal: Boolean,
 ) {
@@ -228,7 +232,7 @@ private fun ExpandedItems(
             dragging = state.draggingConfig === cfg,
             dragOffsetX = if (state.draggingConfig === cfg) state.dragOffsetX else 0f,
             dragOffsetY = if (state.draggingConfig === cfg) state.dragOffsetY else 0f,
-            onClick = { onChildClick(cfg) },
+            onRunTouch = { event -> onChildRunTouch(index, event) },
             onTouch = { event -> onChildTouch(index, event) },
             horizontal = horizontal,
         )
@@ -283,7 +287,7 @@ private fun ControlRow(
     }
 }
 
-/** 子按钮行：非编辑态点击触发识别；编辑态点击打开修改/删除弹框，长按可拖动排序（对应原 buildChildRow） */
+/** 子按钮行：非编辑态点击触发识别，长按 / 滑动透传给下层应用；编辑态点击打开修改/删除弹框，长按可拖动排序 */
 @Composable
 private fun ChildRow(
     cfg: QuickClickConfig,
@@ -292,22 +296,19 @@ private fun ChildRow(
     dragging: Boolean,
     dragOffsetX: Float,
     dragOffsetY: Float,
-    onClick: () -> Unit,
+    onRunTouch: (MotionEvent) -> Boolean,
     onTouch: (MotionEvent) -> Boolean,
     horizontal: Boolean,
 ) {
     val scheme = MaterialTheme.colorScheme
-    // 非编辑态用同一套原始触摸判定做点击；编辑态交给 Service 的长按拖动状态机
-    val tap = rememberRawTapDetector()
     FloatingSquareButton(
         modifier = Modifier
             .padding(start = if (horizontal) 4.dp else 0.dp, top = if (horizontal) 0.dp else 4.dp)
             .offset { IntOffset(x = dragOffsetX.roundToInt(), y = dragOffsetY.roundToInt()) }
             .pointerInteropFilter { event ->
-                if (editing) onTouch(event)
-                else tap.onEvent(event, onTap = onClick)
+                if (editing) onTouch(event) else onRunTouch(event)
             },
-        pressed = pressed || dragging || tap.isPressed,
+        pressed = pressed || dragging,
         // 拖动中的按钮浮起，投影更明显
         shadowElevation = if (dragging) 10.dp else 4.dp,
     ) {
