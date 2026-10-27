@@ -40,8 +40,13 @@ fun FloatingSquareButton(
     Box(
         modifier = modifier
             .size(size)
-            // 阴影在最外层：禁用态的透明度只压暗按钮本体，不影响投影
-            .shadow(elevation = shadowElevation, shape = shape, clip = false)
+            // 禁用态不画投影：半透明方块本身几乎看不见，只剩一团投影压在相邻按钮上，
+            // 看起来像两个透明按钮叠在一起
+            .shadow(
+                elevation = if (enabled) shadowElevation else 0.dp,
+                shape = shape,
+                clip = false,
+            )
             .alpha(if (enabled) 1f else 0.4f)
             .background(
                 color = if (pressed) sem.primaryPressed else background,

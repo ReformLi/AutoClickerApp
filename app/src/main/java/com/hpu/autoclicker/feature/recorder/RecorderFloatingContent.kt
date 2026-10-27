@@ -1,47 +1,38 @@
 package com.hpu.autoclicker.feature.recorder
 
 import android.view.MotionEvent
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.hpu.autoclicker.R
-import com.hpu.autoclicker.core.components.AppBadge
-import com.hpu.autoclicker.core.components.AppBadgeTone
-import com.hpu.autoclicker.core.components.AppBodyText
-import com.hpu.autoclicker.core.components.AppCaption
-import com.hpu.autoclicker.core.components.AppCard
-import com.hpu.autoclicker.core.components.AppSectionTitle
-import com.hpu.autoclicker.core.theme.AppTheme
 import com.hpu.autoclicker.core.theme.Dimens
 import com.hpu.autoclicker.core.ui.FloatingSquareButton
 import com.hpu.autoclicker.core.ui.rememberRawTapDetector
@@ -56,6 +47,9 @@ class RecorderFloatingUiState {
 
     /** 横屏高度放不下竖向面板时改为横排展开，由 Service 按屏幕尺寸切换 */
     var horizontal by mutableStateOf(false)
+
+    /** 竖排贴的是哪条竖边：信息条向屏幕内侧延伸，按钮列始终贴着停靠边，主按钮才不会横向跳动 */
+    var dockedLeft by mutableStateOf(true)
 
     var mainPressed by mutableStateOf(false)
 
@@ -74,11 +68,12 @@ class RecorderFloatingUiState {
 }
 
 /**
- * 录点器悬浮窗内容。
+ * 录点器悬浮窗内容：主按钮固定在首位（竖排在顶部、横排在左端），
+ * 展开时面板向下 / 向右生长，和代点器一致——窗口原点不动，
+ * 因此展开 / 折叠 / 切换运行态都不会出现整窗平移。
  *
- * 编辑态：主按钮 + 常驻的「录制 / 运行 / 脚本 / 设置 / 关闭」；
- * 运行态：只显示脚本信息、进度、重复次数、倍速与「开始/暂停/停止/返回编辑」，
- * 不出现任何编辑入口。
+ * 编辑态：主按钮 + 信息条（有脚本时）+ 录制 / 启动 / 文件 / 设置 / 关闭；
+ * 运行态：主按钮 + 信息条（有脚本时）+ 启动或暂停 / 停止 / 返回。
  *
  * 所有可点元件都走 pointerInteropFilter + [rememberRawTapDetector]，
  * 与主按钮共用一条原始触摸链路，避免 Compose clickable 与拖动状态机抢事件。
@@ -95,7 +90,6 @@ fun RecorderFloatingContent(
     onTogglePlay: () -> Unit,
     onStopPlay: () -> Unit,
     onReturnEdit: () -> Unit,
-    onRepeatChange: (Int) -> Unit,
 ) {
     if (state.horizontal) {
         Row(
@@ -106,8 +100,8 @@ fun RecorderFloatingContent(
         ) {
             MainButton(state, onMainTouch)
             if (state.isExpanded) {
-                Spacer(Modifier.width(Dimens.space8))
-                RecorderPanel(
+                if (state.stepCount > 0) InfoStrip(state, horizontal = true)
+                ActionButtons(
                     state = state,
                     onRecord = onRecord,
                     onRun = onRun,
@@ -117,7 +111,7 @@ fun RecorderFloatingContent(
                     onTogglePlay = onTogglePlay,
                     onStopPlay = onStopPlay,
                     onReturnEdit = onReturnEdit,
-                    onRepeatChange = onRepeatChange,
+                    horizontal = true,
                 )
             }
         }
@@ -126,12 +120,12 @@ fun RecorderFloatingContent(
             modifier = Modifier
                 .background(Color.Transparent)
                 .padding(Dimens.space8),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            horizontalAlignment = if (state.dockedLeft) Alignment.Start else Alignment.End,
         ) {
             MainButton(state, onMainTouch)
             if (state.isExpanded) {
-                Spacer(Modifier.height(Dimens.space8))
-                RecorderPanel(
+                if (state.stepCount > 0) InfoStrip(state, horizontal = false)
+                ActionButtons(
                     state = state,
                     onRecord = onRecord,
                     onRun = onRun,
@@ -141,7 +135,7 @@ fun RecorderFloatingContent(
                     onTogglePlay = onTogglePlay,
                     onStopPlay = onStopPlay,
                     onReturnEdit = onReturnEdit,
-                    onRepeatChange = onRepeatChange,
+                    horizontal = false,
                 )
             }
         }
@@ -149,14 +143,18 @@ fun RecorderFloatingContent(
 }
 
 @Composable
-private fun MainButton(state: RecorderFloatingUiState, onMainTouch: (MotionEvent) -> Boolean) {
+private fun MainButton(
+    state: RecorderFloatingUiState,
+    onMainTouch: (MotionEvent) -> Boolean,
+) {
     val scheme = MaterialTheme.colorScheme
     FloatingSquareButton(
         modifier = Modifier.pointerInteropFilter { onMainTouch(it) },
         pressed = state.mainPressed,
     ) {
         Image(
-            painter = painterResource(R.drawable.ic_record),
+            // 与连点器 / 代点器主按钮同款「总按钮」图标；录制操作仍用 ic_record，两者不再混淆
+            painter = painterResource(R.drawable.ic_main),
             contentDescription = "录点器",
             modifier = Modifier
                 .fillMaxSize()
@@ -166,8 +164,12 @@ private fun MainButton(state: RecorderFloatingUiState, onMainTouch: (MotionEvent
     }
 }
 
+/**
+ * 展开后的操作项。调用方决定外层是 Column 还是 Row：
+ * 直接往当前布局里依次发出各个方块，横排 / 竖排共用同一份定义。
+ */
 @Composable
-private fun RecorderPanel(
+private fun ActionButtons(
     state: RecorderFloatingUiState,
     onRecord: () -> Unit,
     onRun: () -> Unit,
@@ -177,312 +179,190 @@ private fun RecorderPanel(
     onTogglePlay: () -> Unit,
     onStopPlay: () -> Unit,
     onReturnEdit: () -> Unit,
-    onRepeatChange: (Int) -> Unit,
+    horizontal: Boolean,
 ) {
-    val scheme = MaterialTheme.colorScheme
-    val sem = AppTheme.colors
-    AppCard(
-        modifier = Modifier.width(236.dp),
-        border = BorderStroke(Dimens.strokeThin, scheme.outlineVariant),
-        contentPadding = PaddingValues(Dimens.space12),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            AppSectionTitle(text = "录点器")
-            Spacer(Modifier.weight(1f))
-            PanelBadge(state)
-        }
-        AppCaption(
-            text = "${state.scriptName} · ${state.stepCount} 步",
-            modifier = Modifier.padding(top = Dimens.space4),
-            maxLines = 1,
-        )
-        if (state.mode == RecorderPanelMode.EDIT && state.draftAvailable) {
-            AppCaption(
-                text = "有未完成草稿，可从脚本入口恢复",
-                modifier = Modifier.padding(top = Dimens.space4),
-                color = sem.warning,
-                maxLines = 1,
-            )
-        }
-
-        HorizontalDivider(
-            modifier = Modifier.padding(vertical = Dimens.space8),
-            thickness = Dimens.divider,
-            color = scheme.outlineVariant,
-        )
-
-        if (state.mode == RecorderPanelMode.EDIT) {
-            EditActions(
-                stepCount = state.stepCount,
-                onRecord = onRecord,
-                onRun = onRun,
-                onScripts = onScripts,
-                onSettings = onSettings,
-                onClose = onClose,
-            )
-        } else {
-            RunningActions(
-                state = state,
-                onTogglePlay = onTogglePlay,
-                onStopPlay = onStopPlay,
-                onReturnEdit = onReturnEdit,
-                onRepeatChange = onRepeatChange,
-            )
-        }
-    }
-}
-
-@Composable
-private fun PanelBadge(state: RecorderFloatingUiState) {
-    when {
-        state.mode == RecorderPanelMode.EDIT -> AppBadge(
-            text = "编辑",
-            tone = AppBadgeTone.Primary,
-        )
-
-        state.playing && state.paused -> AppBadge(
-            text = "已暂停",
-            tone = AppBadgeTone.Warning,
-        )
-
-        state.playing -> AppBadge(
-            text = "回放中",
-            tone = AppBadgeTone.Success,
-        )
-
-        else -> AppBadge(
-            text = "待运行",
-            tone = AppBadgeTone.Neutral,
-        )
-    }
-}
-
-@Composable
-private fun EditActions(
-    stepCount: Int,
-    onRecord: () -> Unit,
-    onRun: () -> Unit,
-    onScripts: () -> Unit,
-    onSettings: () -> Unit,
-    onClose: () -> Unit,
-) {
-    Row(horizontalArrangement = Arrangement.spacedBy(Dimens.space8)) {
-        PanelAction(
-            text = "录制",
+    if (state.mode == RecorderPanelMode.EDIT) {
+        IconAction(
+            iconRes = R.drawable.ic_record,
+            desc = "录制",
+            enabled = true,
             onClick = onRecord,
-            modifier = Modifier.weight(1f),
-            style = PanelActionStyle.Record,
+            horizontal = horizontal,
         )
-        PanelAction(
-            text = "运行",
-            onClick = onRun,
-            modifier = Modifier.weight(1f),
-            style = PanelActionStyle.Primary,
-            enabled = stepCount > 0,
-        )
-    }
-    Spacer(Modifier.height(Dimens.space8))
-    Row(horizontalArrangement = Arrangement.spacedBy(Dimens.space8)) {
-        PanelAction(
-            text = "脚本",
-            onClick = onScripts,
-            modifier = Modifier.weight(1f),
-            style = PanelActionStyle.Outlined,
-        )
-        PanelAction(
-            text = "设置",
-            onClick = onSettings,
-            modifier = Modifier.weight(1f),
-            style = PanelActionStyle.Outlined,
-        )
-    }
-    Spacer(Modifier.height(Dimens.space4))
-    PanelAction(
-        text = "关闭悬浮窗",
-        onClick = onClose,
-        modifier = Modifier.fillMaxWidth(),
-        style = PanelActionStyle.TextDanger,
-    )
-}
-
-@Composable
-private fun RunningActions(
-    state: RecorderFloatingUiState,
-    onTogglePlay: () -> Unit,
-    onStopPlay: () -> Unit,
-    onReturnEdit: () -> Unit,
-    onRepeatChange: (Int) -> Unit,
-) {
-    val scheme = MaterialTheme.colorScheme
-    AppBodyText(
-        text = state.scriptName,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-    )
-    val progress = if (state.stepCount > 0) {
-        val step = (state.currentStep + 1).coerceIn(1, state.stepCount)
-        val repeat = (state.currentRepeat + 1).coerceIn(1, state.repeatCount)
-        "第 $step/${state.stepCount} 步 · 重复 $repeat/${state.repeatCount}"
-    } else {
-        "尚无可回放步骤"
-    }
-    AppCaption(
-        text = progress,
-        modifier = Modifier.padding(top = Dimens.space4),
-        maxLines = 1,
-    )
-
-    Spacer(Modifier.height(Dimens.space8))
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        AppCaption(text = "重复次数")
-        Spacer(Modifier.weight(1f))
-        RepeatStepper(
-            value = state.repeatCount,
-            onChange = onRepeatChange,
-        )
-    }
-    Row(
-        modifier = Modifier.padding(top = Dimens.space8),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AppCaption(text = "回放倍速")
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = "${formatSpeed(state.speed)}×",
-            style = MaterialTheme.typography.labelLarge,
-            color = scheme.onSurface,
-        )
-    }
-
-    Spacer(Modifier.height(Dimens.space8))
-    Row(horizontalArrangement = Arrangement.spacedBy(Dimens.space8)) {
-        val toggleText = when {
-            state.playing && state.paused -> "继续"
-            state.playing -> "暂停"
-            else -> "开始"
-        }
-        PanelAction(
-            text = toggleText,
-            onClick = onTogglePlay,
-            modifier = Modifier.weight(1f),
-            style = PanelActionStyle.Primary,
+        IconAction(
+            iconRes = R.drawable.ic_play,
+            desc = "启动",
             enabled = state.stepCount > 0,
+            onClick = onRun,
+            horizontal = horizontal,
         )
-        PanelAction(
-            text = "停止",
-            onClick = onStopPlay,
-            modifier = Modifier.weight(1f),
-            style = PanelActionStyle.Outlined,
+        IconAction(
+            iconRes = R.drawable.ic_folder,
+            desc = "文件",
+            enabled = true,
+            onClick = onScripts,
+            horizontal = horizontal,
+        )
+        IconAction(
+            iconRes = R.drawable.ic_settings,
+            desc = "设置",
+            enabled = true,
+            onClick = onSettings,
+            horizontal = horizontal,
+        )
+        IconAction(
+            // 与连点器 / 代点器同一个关闭图标，固定排在编辑操作的最后
+            iconRes = R.drawable.ic_exit,
+            desc = "关闭",
+            enabled = true,
+            onClick = onClose,
+            horizontal = horizontal,
+        )
+    } else {
+        val playingNow = state.playing && !state.paused
+        IconAction(
+            iconRes = if (playingNow) R.drawable.ic_pause else R.drawable.ic_play,
+            desc = when {
+                playingNow -> "暂停"
+                state.playing -> "继续"
+                else -> "启动"
+            },
+            enabled = state.stepCount > 0,
+            onClick = onTogglePlay,
+            horizontal = horizontal,
+        )
+        IconAction(
+            iconRes = R.drawable.ic_stop,
+            desc = "停止",
             enabled = state.playing,
+            onClick = onStopPlay,
+            horizontal = horizontal,
+        )
+        IconAction(
+            iconRes = R.drawable.ic_back,
+            desc = "返回",
+            enabled = true,
+            onClick = onReturnEdit,
+            horizontal = horizontal,
         )
     }
-    Spacer(Modifier.height(Dimens.space4))
-    PanelAction(
-        text = "返回编辑",
-        onClick = onReturnEdit,
-        modifier = Modifier.fillMaxWidth(),
-        style = PanelActionStyle.Text,
-    )
 }
 
+/**
+ * 信息条：只读展示，不可点，尺寸与主按钮完全一致（40dp 方块）。
+ * 没有任何脚本（0 步）时整个信息条不渲染，悬浮窗上不会出现「未命名脚本」之类的占位。
+ *
+ * 底色用品牌浅色（primaryContainer）而不是白色：白色方块夹在一排品牌实心按钮中间很突兀，
+ * 浅青既与按钮同族，又靠「浅底 + 深字」表明它是展示块而非可点按钮（与主页模块徽标同一套语言）。
+ *
+ * 编辑态：脚本名；
+ * 运行态：脚本名 / 第 X/Y 轮 / 第 N/M 步，每行独立按可用宽度缩字号。
+ */
 @Composable
-private fun RepeatStepper(value: Int, onChange: (Int) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        StepperButton(text = "−", enabled = value > RecorderScript.MIN_REPEAT) {
-            onChange(value - 1)
+private fun InfoStrip(state: RecorderFloatingUiState, horizontal: Boolean) {
+    val scheme = MaterialTheme.colorScheme
+    val shape = MaterialTheme.shapes.small
+    Column(
+        modifier = Modifier
+            .padding(
+                start = if (horizontal) Dimens.space4 else 0.dp,
+                top = if (horizontal) 0.dp else Dimens.space4,
+            )
+            .size(40.dp)
+            .shadow(elevation = 4.dp, shape = shape, clip = false)
+            .background(scheme.primaryContainer, shape)
+            .padding(horizontal = 2.dp, vertical = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        StripLine(text = state.scriptName, color = scheme.onPrimaryContainer)
+        if (state.mode == RecorderPanelMode.RUNNING) {
+            val step = if (state.stepCount > 0) {
+                (state.currentStep + 1).coerceIn(1, state.stepCount)
+            } else {
+                0
+            }
+            val repeat = (state.currentRepeat + 1).coerceIn(1, state.repeatCount)
+            StripLine(text = "第 $repeat/${state.repeatCount} 轮", color = scheme.onPrimaryContainer)
+            StripLine(text = "第 $step/${state.stepCount} 步", color = scheme.onPrimaryContainer)
+        }
+    }
+}
+
+private val StripLineMaxSize = 9.sp
+private val StripLineMinSize = 6.sp
+
+/**
+ * 信息条单行：40dp 方块里放不下时逐档缩小字号（每行独立判定），
+ * 三行可以出现不同字号；缩到 6sp 仍超出才省略。
+ */
+@Composable
+private fun StripLine(text: String, color: Color) {
+    val base = MaterialTheme.typography.labelSmall
+    val measurer = rememberTextMeasurer()
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center,
+    ) {
+        val maxWidth = constraints.maxWidth
+        val fontSize = remember(text, maxWidth) {
+            var size = StripLineMaxSize
+            while (size.value > StripLineMinSize.value) {
+                val fits = measurer.measure(
+                    text = AnnotatedString(text),
+                    style = base.copy(fontSize = size),
+                    maxLines = 1,
+                    softWrap = false,
+                ).size.width <= maxWidth
+                if (fits) break
+                size = (size.value - 0.5f).sp
+            }
+            size
         }
         Text(
-            text = value.toString(),
-            modifier = Modifier.width(Dimens.space32 + Dimens.space8),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurface,
+            text = text,
+            color = color,
+            style = base.copy(
+                fontSize = fontSize,
+                lineHeight = (fontSize.value * 1.1f).sp,
+            ),
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
         )
-        StepperButton(text = "+", enabled = value < RecorderScript.MAX_REPEAT) {
-            onChange(value + 1)
-        }
     }
 }
 
+/** 操作栏方块：40dp 见方、12dp 圆角；竖排 4dp 上间距 / 横排 4dp 左间距 */
 @Composable
-private fun StepperButton(text: String, enabled: Boolean, onClick: () -> Unit) {
-    val tap = rememberRawTapDetector()
-    val scheme = MaterialTheme.colorScheme
-    Box(
-        modifier = Modifier
-            .width(Dimens.space32)
-            .height(Dimens.space32)
-            .background(
-                if (enabled) scheme.surfaceContainerHigh else scheme.surfaceContainer,
-                MaterialTheme.shapes.extraSmall,
-            )
-            .pointerInteropFilter { event -> tap.onEvent(event, enabled, onTap = onClick) },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelLarge,
-            color = if (enabled) scheme.onSurface else scheme.outline,
-        )
-    }
-}
-
-private enum class PanelActionStyle { Primary, Record, Outlined, Text, TextDanger }
-
-@Composable
-private fun PanelAction(
-    text: String,
+private fun IconAction(
+    iconRes: Int,
+    desc: String,
+    enabled: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    style: PanelActionStyle = PanelActionStyle.Outlined,
-    enabled: Boolean = true,
+    horizontal: Boolean,
 ) {
     val scheme = MaterialTheme.colorScheme
+    // 与主按钮同一条原始触摸链路（不使用 clickable，避免两条事件链路互相吞事件）
     val tap = rememberRawTapDetector()
-    val shape = MaterialTheme.shapes.small
-
-    val background = when {
-        !enabled -> scheme.surfaceContainerHighest
-        style == PanelActionStyle.Primary -> scheme.primary
-        style == PanelActionStyle.Record -> scheme.error
-        style == PanelActionStyle.Outlined -> scheme.surface
-        else -> Color.Transparent
-    }
-    val foreground = when {
-        !enabled -> scheme.outline
-        style == PanelActionStyle.Primary -> scheme.onPrimary
-        style == PanelActionStyle.Record -> scheme.onError
-        style == PanelActionStyle.Outlined -> scheme.primary
-        style == PanelActionStyle.TextDanger -> scheme.error
-        else -> scheme.primary
-    }
-
-    Box(
-        modifier = modifier
-            .height(Dimens.buttonHeightSm)
-            .background(background, shape)
-            .then(
-                if (style == PanelActionStyle.Outlined) {
-                    Modifier.border(
-                        Dimens.strokeThin,
-                        if (enabled) scheme.outlineVariant else scheme.surfaceContainerHighest,
-                        shape,
-                    )
-                } else {
-                    Modifier
-                }
+    FloatingSquareButton(
+        modifier = Modifier
+            .padding(
+                start = if (horizontal) Dimens.space4 else 0.dp,
+                top = if (horizontal) 0.dp else Dimens.space4,
             )
-            .graphicsLayer { alpha = if (tap.isPressed && enabled) 0.82f else 1f }
-            .pointerInteropFilter { event -> tap.onEvent(event, enabled, onTap = onClick) },
-        contentAlignment = Alignment.Center,
+            .pointerInteropFilter { event -> tap.onEvent(event, enabled = enabled, onTap = onClick) },
+        pressed = enabled && tap.isPressed,
+        enabled = enabled,
     ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelLarge,
-            color = foreground,
+        Image(
+            painter = painterResource(iconRes),
+            contentDescription = desc,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(6.dp),
+            colorFilter = ColorFilter.tint(scheme.onPrimary),
         )
     }
 }
-
-private fun formatSpeed(speed: Float): String =
-    if (speed == speed.toInt().toFloat()) speed.toInt().toString() else speed.toString()

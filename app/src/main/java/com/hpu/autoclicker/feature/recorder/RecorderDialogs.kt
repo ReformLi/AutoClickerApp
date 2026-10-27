@@ -1,5 +1,6 @@
 package com.hpu.autoclicker.feature.recorder
 
+import android.text.InputFilter
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +15,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import com.hpu.autoclicker.core.components.AppBodyText
 import com.hpu.autoclicker.core.components.AppButton
 import com.hpu.autoclicker.core.components.AppButtonVariant
@@ -22,9 +26,10 @@ import com.hpu.autoclicker.core.components.AppConfirmMessage
 import com.hpu.autoclicker.core.components.AppDialogActions
 import com.hpu.autoclicker.core.components.AppDialogPanel
 import com.hpu.autoclicker.core.components.AppFieldLabel
+import com.hpu.autoclicker.core.components.AppOpacityDialogContent
+import com.hpu.autoclicker.core.components.AppOpacityDialogState
 import com.hpu.autoclicker.core.components.AppScriptList
 import com.hpu.autoclicker.core.components.AppSegmentedControl
-import com.hpu.autoclicker.core.components.AppSlider
 import com.hpu.autoclicker.core.components.AppTextField
 import com.hpu.autoclicker.core.theme.Dimens
 
@@ -188,9 +193,38 @@ fun RecorderConfirmDialog(
     }
 }
 
+private class RecorderRepeatState(initial: Int) {
+    var value by mutableStateOf(initial.coerceIn(RecorderScript.MIN_REPEAT, RecorderScript.MAX_REPEAT).toString())
+    var error by mutableStateOf<String?>(null)
+}
+
 private class RecorderNameState(initial: String) {
     var value by mutableStateOf(initial)
     var error by mutableStateOf<String?>(null)
+}
+
+/**
+ * 脚本名限长：与代点器的按钮名一致——含中文 ≤3 字，纯英文 / 数字 ≤6 字符。
+ * 悬浮窗上的信息条只有 40dp 见方，超过这个长度就只能靠缩字号，观感会碎。
+ */
+internal fun recorderNameMaxLength(text: CharSequence): Int =
+    if (text.any { it.code > 0x2E80 }) 3 else 6
+
+/** 名称输入的硬限制：超长部分直接由输入框丢弃，避免状态回灌滞后导致漏截 */
+internal val RecorderNameInputFilter = InputFilter { source, start, end, dest, dstart, dend ->
+    val result = buildString {
+        append(dest, 0, dstart)
+        append(source, start, end)
+        append(dest, dend, dest.length)
+    }
+    val max = recorderNameMaxLength(result)
+    if (result.length <= max) {
+        null
+    } else {
+        val keep = max - (dest.length - (dend - dstart))
+        // 截断处若是空格（旧版长名「脚本 1」截成「脚本 」），一并去掉，别留悬空空格
+        if (keep <= 0) "" else source.subSequence(start, start + keep).toString().trimEnd()
+    }
 }
 
 /** 脚本命名：保存 / 改名共用 */
@@ -230,7 +264,11 @@ fun RecorderNameDialog(
             },
             modifier = Modifier.padding(top = Dimens.fieldGap),
             hint = hint,
-            maxLength = RecorderScript.MAX_NAME_LENGTH,
+            inputFilter = RecorderNameInputFilter,
+        )
+        AppCaption(
+            text = "中文最多 3 个字，英文 / 数字最多 6 个字符",
+            modifier = Modifier.padding(top = Dimens.space4),
         )
         state.error?.let {
             AppCaption(
@@ -307,13 +345,79 @@ fun RecorderScriptManagerDialog(
     }
 }
 
-/** 设置：回放倍速 + 悬浮窗透明度 */
+/**
+ * 启动确认：回放前先看清脚本与倍速，轮数在这里定下并写回脚本。
+ * 倍速本身只在设置里改，这里只读展示。
+ */
+@Composable
+fun RecorderLaunchDialog(
+    scriptName: String,
+    stepCount: Int,
+    speed: Float,
+    initialRepeat: Int,
+    onStart: (Int) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val state = remember(initialRepeat) { RecorderRepeatState(initialRepeat) }
+    AppDialogPanel(
+        title = "开始回放",
+        subtitle = "$scriptName · $stepCount 步",
+        actions = {
+            AppDialogActions(
+                confirmText = "启动",
+                onConfirm = {
+                    val count = state.value.toIntOrNull()
+                    if (count == null ||
+                        count < RecorderScript.MIN_REPEAT ||
+                        count > RecorderScript.MAX_REPEAT
+                    ) {
+                        state.error = "请输入 ${RecorderScript.MIN_REPEAT}–${RecorderScript.MAX_REPEAT} 之间的整数"
+                    } else {
+                        onStart(count)
+                    }
+                },
+                cancelText = "取消",
+                onCancel = onCancel,
+            )
+        },
+    ) {
+        AppFieldLabel(text = "重复次数")
+        AppTextField(
+            value = state.value,
+            onValueChange = {
+                state.value = it
+                state.error = null
+            },
+            modifier = Modifier.padding(top = Dimens.fieldGap),
+            hint = "1",
+            keyboardType = KeyboardType.Number,
+            maxLength = 3,
+            textAlign = TextAlign.Center,
+        )
+        AppCaption(
+            text = "范围 ${RecorderScript.MIN_REPEAT}–${RecorderScript.MAX_REPEAT}；倍速 ${formatSpeedLabel(speed)}，只能在设置里改",
+            modifier = Modifier.padding(top = Dimens.space4),
+        )
+        state.error?.let {
+            AppCaption(
+                text = it,
+                modifier = Modifier.padding(top = Dimens.space4),
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+/** 设置：回放倍速 + 悬浮窗透明度 + 关闭悬浮窗入口 */
 @Composable
 fun RecorderSettingsDialog(
     initialSpeed: Float,
     initialAlpha: Float,
+    onAlphaChange: (Float) -> Unit,
+    onDraggingChange: (dragging: Boolean, value: Float, anchor: Rect?) -> Unit,
     onConfirm: (speed: Float, alpha: Float) -> Unit,
     onCancel: () -> Unit,
+    onCloseWindow: () -> Unit,
 ) {
     val speeds = RecorderStore.SPEEDS
     var speedIndex by remember(initialSpeed) {
@@ -321,16 +425,26 @@ fun RecorderSettingsDialog(
             speeds.indexOfFirst { it == initialSpeed }.let { if (it >= 0) it else 1 }
         )
     }
-    var alpha by remember(initialAlpha) { mutableStateOf(initialAlpha) }
+    val opacityState = remember(initialAlpha) {
+        AppOpacityDialogState().apply { alpha = initialAlpha }
+    }
 
     AppDialogPanel(
         title = "录点器设置",
         actions = {
             AppDialogActions(
                 confirmText = "确定",
-                onConfirm = { onConfirm(speeds[speedIndex], alpha) },
+                onConfirm = { onConfirm(speeds[speedIndex], opacityState.alpha) },
                 cancelText = "取消",
                 onCancel = onCancel,
+            )
+            // 悬浮窗上没有关闭按钮，退出收在这里
+            Spacer(Modifier.height(Dimens.space8))
+            AppButton(
+                text = "关闭悬浮窗",
+                onClick = onCloseWindow,
+                modifier = Modifier.fillMaxWidth(),
+                variant = AppButtonVariant.DangerText,
             )
         },
     ) {
@@ -348,19 +462,18 @@ fun RecorderSettingsDialog(
                 .padding(top = Dimens.fieldGap),
         )
 
+        // 透明度与连点器 / 代点器共用同一套内容：拖动实时改窗口透明度，
+        // 拖动期间弹框隐藏、在原位显示预览条，松手恢复
         Column(modifier = Modifier.padding(top = Dimens.space24)) {
-            Row {
-                AppFieldLabel(text = "悬浮窗透明度")
-                Spacer(Modifier.weight(1f))
-                AppCaption(text = "${(alpha * 100).toInt()}%")
-            }
-            AppSlider(
-                value = alpha,
-                onValueChange = { alpha = it },
-                valueRange = RecorderStore.MIN_WINDOW_ALPHA..1f,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = Dimens.space8),
+            AppFieldLabel(text = "悬浮窗透明度")
+            AppOpacityDialogContent(
+                state = opacityState,
+                minAlpha = RecorderStore.MIN_WINDOW_ALPHA,
+                onAlphaChange = {
+                    opacityState.alpha = it
+                    onAlphaChange(it)
+                },
+                onDraggingChange = onDraggingChange,
             )
         }
     }

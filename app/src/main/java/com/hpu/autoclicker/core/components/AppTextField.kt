@@ -150,13 +150,16 @@ fun AppTextField(
                     val selStart = et.selectionStart
                     val selEnd = et.selectionEnd
                     et.setText(value)
+                    // setText 会先过 InputFilter，实际文本可能比 value 短；选区必须按实际长度夹取，
+                    // 否则「旧名超长被滤镜截短」时 setSelection 会抛 IndexOutOfBounds
+                    val length = et.text.length
                     if (et.hasFocus() && selStart >= 0 && selEnd >= 0) {
                         et.setSelection(
-                            selStart.coerceIn(0, value.length),
-                            selEnd.coerceIn(0, value.length),
+                            selStart.coerceIn(0, length),
+                            selEnd.coerceIn(0, length),
                         )
                     } else {
-                        et.setSelection(value.length)
+                        et.setSelection(length)
                     }
                 }
             },

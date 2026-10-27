@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.ComposeView
 import com.hpu.autoclicker.core.accessibility.AutoClickerAccessibilityService
 import com.hpu.autoclicker.core.theme.AutoClickerTheme
 import com.hpu.autoclicker.core.ui.FloatingWindowBounds
+import com.hpu.autoclicker.core.ui.OpacityDragPreview
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
 import com.hpu.autoclicker.core.ui.ServiceDialogs
 
@@ -34,9 +35,9 @@ import com.hpu.autoclicker.core.ui.ServiceDialogs
  * 录点器悬浮服务 —— 与连点器 / 代点器完全独立：
  * 只共用悬浮窗基础设施（ComposeView、拖动、弹框宿主），脚本、存储、运行态都归本模块所有。
  *
- * 编辑态：主按钮 + 录制 / 运行 / 脚本 / 设置 / 关闭。
+ * 编辑态：主按钮 + 信息条（脚本名）+ 录制 / 启动 / 文件 / 设置 / 关闭。
  * 录制态：主窗隐藏，全屏透明捕获层消费触摸并即时回显；顶部小条提供开始 / 暂停 / 停止。
- * 运行态：按脚本逐步注入手势，支持暂停、停止、返回编辑；重复次数是脚本属性，改动会写回脚本。
+ * 运行态：按脚本逐步注入手势，支持暂停、停止、返回编辑；重复次数在启动前确认，运行中不改。
  *
  * 现场保存：
  * - 录制每落一步写 `draft.json`，服务被切模块/被杀后可在下次启动恢复；
@@ -106,6 +107,7 @@ class RecorderService : Service() {
 
     private var captureOverlay: RecorderCaptureOverlay? = null
     private var replayTimeout: Runnable? = null
+    private var opacityPreview: OpacityDragPreview? = null
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -182,14 +184,13 @@ class RecorderService : Service() {
                     state = ui,
                     onMainTouch = { event -> onMainTouch(event) },
                     onRecord = { requestNewRecording() },
-                    onRun = { enterRunningMode() },
+                    onRun = { requestLaunch(fromRunning = false) },
                     onScripts = { showScriptManagerDialog() },
                     onSettings = { showSettingsDialog() },
                     onClose = { requestCloseWindow() },
                     onTogglePlay = { togglePlayback() },
                     onStopPlay = { stopPlayback() },
                     onReturnEdit = { requestReturnToEdit() },
-                    onRepeatChange = { value -> changeRepeatCount(value) },
                 )
             }
         }
@@ -219,14 +220,20 @@ class RecorderService : Service() {
             android.util.Log.e("Recorder", "addView 失败", e)
         }
 
-        // 内容尺寸变化（展开 / 折叠 / 横竖屏重排）后重选布局并夹回可见区域
+        // 内容尺寸变化（展开 / 折叠 / 模式切换 / 横竖屏重排）后重选布局并夹回可见区域。
+        // 主按钮在首位、面板向下（横排向右）生长，窗口原点不用平移，
+        // 因此这里直接用这一帧的实测尺寸做夹取，避免多等一帧看到窗口先越界再弹回来。
         root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
-            if (rootAdded &&
-                (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop)
-            ) {
-                syncLayoutMode()
-                clampWindow()
+            if (!rootAdded) return@addOnLayoutChangeListener
+            val width = right - left
+            val height = bottom - top
+            if (width == oldRight - oldLeft && height == oldBottom - oldTop) {
+                return@addOnLayoutChangeListener
             }
+            // 安全区按当前坐标算：此时窗口还没被移动，原点偏移是准的
+            val bounds = FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin())
+            syncLayoutMode()
+            applyWindowClamp(width, height, bounds)
         }
 
         ui.speed = RecorderStore.getSpeed(this)
@@ -259,6 +266,8 @@ class RecorderService : Service() {
         engine.stop()
         captureOverlay?.dismiss()
         captureOverlay = null
+        opacityPreview?.hide()
+        opacityPreview = null
         removeBar()
         if (rootAdded) {
             try {
@@ -354,6 +363,7 @@ class RecorderService : Service() {
             lp.x = if (dockedLeft) bounds.left else (bounds.right - viewW).coerceAtLeast(bounds.left)
             lp.y = FloatingWindowBounds.clampInside(lp.y, viewH, bounds.top, bounds.bottom)
         }
+        ui.dockedLeft = dockedLeft
         try {
             windowManager.updateViewLayout(root, lp)
         } catch (e: Exception) {
@@ -362,26 +372,34 @@ class RecorderService : Service() {
     }
 
     /** 把窗口整体夹回安全区域：贴边轴跟随当前吸附轴，另一轴保留位置 */
-    private fun clampWindow() {
+    private fun clampWindow(bounds: Rect? = null) {
         if (!rootAdded) return
-        root.post { applyWindowClamp() }
+        root.post { applyWindowClamp(0, 0, bounds) }
     }
 
-    private fun applyWindowClamp() {
+    /**
+     * [viewW] / [viewH] 为 0 时取视图实测尺寸；布局回调里直接传这一帧的新尺寸，
+     * 免得用旧的实测值把刚变大的窗口夹错位置。
+     */
+    private fun applyWindowClamp(viewW: Int = 0, viewH: Int = 0, bounds: Rect? = null) {
         if (!rootAdded) return
-        val bounds = FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin())
+        val safe = bounds
+            ?: FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin())
+        // 换轴的这一帧 root 尺寸可能还是旧轴的，取实测与测量的较大值再夹
+        val width = if (viewW > 0) viewW else root.width.coerceAtLeast(root.measuredWidth)
+        val height = if (viewH > 0) viewH else root.height.coerceAtLeast(root.measuredHeight)
         val newX: Int
         val newY: Int
         if (docksTopBottom()) {
             newY = if (dockedTop) {
-                bounds.top
+                safe.top
             } else {
-                (bounds.bottom - root.height).coerceAtLeast(bounds.top)
+                (safe.bottom - height).coerceAtLeast(safe.top)
             }
-            newX = FloatingWindowBounds.clampInside(lp.x, root.width, bounds.left, bounds.right)
+            newX = FloatingWindowBounds.clampInside(lp.x, width, safe.left, safe.right)
         } else {
-            newX = if (dockedLeft) bounds.left else (bounds.right - root.width).coerceAtLeast(bounds.left)
-            newY = FloatingWindowBounds.clampInside(lp.y, root.height, bounds.top, bounds.bottom)
+            newX = if (dockedLeft) safe.left else (safe.right - width).coerceAtLeast(safe.left)
+            newY = FloatingWindowBounds.clampInside(lp.y, height, safe.top, safe.bottom)
         }
         if (newX != lp.x || newY != lp.y) {
             lp.x = newX
@@ -397,15 +415,17 @@ class RecorderService : Service() {
     private fun edgeMargin(): Int = dp(12)
 
     /**
-     * 横屏可用高度通常放不下竖向面板：竖向长度 + 面板宽度都能放下时改为横排，
-     * 两者都放不下则只能保持竖排并提示用户。
+     * 按当前朝向定横排 / 竖排，并据此重选停靠边。
+     * 见 [shouldUseHorizontalLayout]：横屏横排、竖屏竖排，主按钮始终在首位。
      */
     private fun syncLayoutMode() {
+        val wasHorizontal = ui.horizontal
         ui.horizontal = shouldUseHorizontalLayout()
         val topBottom = docksTopBottom()
-        if (topBottom != dockTopBottom) {
-            // 换吸附轴（进入横排 / 转横屏 / 转回竖屏）：按窗口左上角所在的半区选最近的那条边。
-            // 不用宽高算中心——旋转瞬间拿到的还是旧方向的视口尺寸。
+        // 换吸附轴（进入横排 / 转横屏 / 转回竖屏），或横屏里横排↔竖排互切时，
+        // 面板的长边方向变了，不按当前位置重选停靠边就会沿旧轴定位、跑到屏幕外。
+        // 不用宽高算中心——旋转瞬间拿到的还是旧方向的视口尺寸。
+        if (topBottom != dockTopBottom || wasHorizontal != ui.horizontal) {
             val bounds = FloatingWindowBounds.safeBounds(windowManager, root, lp, edgeMargin())
             if (topBottom) {
                 dockedTop = lp.y < (bounds.top + bounds.bottom) / 2
@@ -413,6 +433,7 @@ class RecorderService : Service() {
                 dockedLeft = lp.x < (bounds.left + bounds.right) / 2
             }
             dockTopBottom = topBottom
+            ui.dockedLeft = dockedLeft
         }
     }
 
@@ -420,22 +441,35 @@ class RecorderService : Service() {
     private fun docksTopBottom(): Boolean =
         ui.horizontal || resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
+    /**
+     * 展开时横屏一律横排：横屏把 y 吸到上下边，竖向面板沿吸附轴生长会一路顶到底；
+     * 横排与竖排都从主按钮所在角落向外生长，但横排在横屏下才有足够横向空间。
+     * 竖屏用单列，竖屏高度装不下时也退回横排。
+     */
     private fun shouldUseHorizontalLayout(): Boolean {
         if (!ui.isExpanded) return false
-        val size = FloatingWindowBounds.usableSize(windowManager, root, lp)
-        return verticalLength() > size.y && horizontalLength() <= size.x
+        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) return true
+        val size = FloatingWindowBounds.screenUsableSize(windowManager, root, edgeMargin())
+        return expandedLength() > size.y
     }
 
-    private fun verticalLength(): Int = dp(
-        16 + 56 + 8 + if (ui.mode == RecorderPanelMode.EDIT) 213 else 225
-    )
-
-    private fun horizontalLength(): Int = dp(16 + 56 + 8 + 236)
+    /**
+     * 展开后的总长度：内边距 + 主按钮 + 信息条（有脚本时）+ 当前模式的动作数。
+     * 已展开时用实测尺寸兜底，避免估算偏差把方向判反。
+     */
+    private fun expandedLength(): Int {
+        val actions = if (ui.mode == RecorderPanelMode.EDIT) 5 else 3
+        val info = if (ui.stepCount > 0) 44 else 0
+        val estimated = dp(56 + info + actions * 44)
+        if (!ui.isExpanded || ui.horizontal) return estimated
+        return maxOf(estimated, root.height)
+    }
 
     private fun warnIfExpandedTooLarge() {
         if (!ui.isExpanded) return
-        val size = FloatingWindowBounds.usableSize(windowManager, root, lp)
-        if (verticalLength() > size.y && horizontalLength() > size.x) {
+        val size = FloatingWindowBounds.screenUsableSize(windowManager, root, edgeMargin())
+        val length = expandedLength()
+        if (length > size.y && length > size.x) {
             toast("当前屏幕放不下展开面板，请旋转设备后再试")
         }
     }
@@ -920,20 +954,52 @@ class RecorderService : Service() {
     // ==================== 回放 ====================
 
     private fun enterRunningMode() {
+        val script = currentScript ?: return
+        ui.mode = RecorderPanelMode.RUNNING
+        ui.isExpanded = true
+        ui.speed = RecorderStore.getSpeed(this)
+        ui.repeatCount = script.repeatCount
+        startPlayback()
+    }
+
+    /** 「启动」的唯一入口：先弹启动确认（含回放轮数），确认后才开始注入 */
+    private fun requestLaunch(fromRunning: Boolean) {
         val script = currentScript
         if (script == null || script.steps.isEmpty()) {
-            toast("请先录制或加载一个脚本")
+            toast(if (fromRunning) "脚本没有可回放的步骤" else "请先录制或加载一个脚本")
             return
         }
         if (AutoClickerAccessibilityService.instance == null) {
             toast("无障碍服务未连接，请到系统设置重新开启")
             return
         }
-        ui.mode = RecorderPanelMode.RUNNING
-        ui.isExpanded = true
-        ui.speed = RecorderStore.getSpeed(this)
-        ui.repeatCount = script.repeatCount
-        startPlayback()
+        showLaunchDialog(script, fromRunning)
+    }
+
+    /** 启动确认：轮数是脚本属性，只在这里定；运行中不再提供修改入口 */
+    private fun showLaunchDialog(script: RecorderScript, fromRunning: Boolean) {
+        var dialogRef: AlertDialog? = null
+        var host: ServiceComposeHost? = null
+        val composeHost = ServiceComposeHost().also { host = it }
+        dialogRef = ServiceDialogs.show(
+            service = this,
+            host = composeHost,
+            widthRatio = 0.85f,
+            onDismiss = { host?.destroy() },
+        ) {
+            RecorderLaunchDialog(
+                scriptName = script.name,
+                stepCount = script.steps.size,
+                speed = RecorderStore.getSpeed(this),
+                initialRepeat = ui.repeatCount,
+                onStart = { repeat ->
+                    dialogRef?.dismiss()
+                    applyRepeatCount(script, repeat)
+                    if (fromRunning) startPlayback() else enterRunningMode()
+                },
+                onCancel = { dialogRef?.dismiss() },
+            )
+        }
     }
 
     private fun startPlayback() {
@@ -969,7 +1035,7 @@ class RecorderService : Service() {
                 persistSession(engine.currentStepIndex, engine.currentRepeatIndex)
             }
 
-            else -> startPlayback()
+            else -> requestLaunch(fromRunning = true)
         }
     }
 
@@ -1009,20 +1075,17 @@ class RecorderService : Service() {
         }
     }
 
-    /** 重复次数是脚本属性：运行中修改立即生效，并写回当前脚本；已保存脚本同步落盘 */
-    private fun changeRepeatCount(value: Int) {
-        val script = currentScript ?: return
+    /** 重复次数是脚本属性：启动确认里定，已保存的脚本同步落盘 */
+    private fun applyRepeatCount(script: RecorderScript, value: Int) {
         val count = value.coerceIn(RecorderScript.MIN_REPEAT, RecorderScript.MAX_REPEAT)
-        if (count == ui.repeatCount) return
-        currentScript = script.copy(repeatCount = count)
-        ui.repeatCount = count
-        engine.setRepeatCount(count)
-        if (isSaved(script.id)) {
-            currentScript = RecorderStore.saveScript(this, currentScript!!)
-            toast("重复次数已更新为 $count，已写入脚本")
-        } else {
-            toast("重复次数已更新为 $count（脚本尚未保存）")
+        if (count == script.repeatCount) {
+            ui.repeatCount = count
+            return
         }
+        val updated = script.copy(repeatCount = count, updatedAt = System.currentTimeMillis())
+        currentScript = if (isSaved(script.id)) RecorderStore.saveScript(this, updated) else updated
+        ui.repeatCount = currentScript?.repeatCount ?: count
+        ui.scriptSaved = isSaved(updated.id)
     }
 
     private fun persistSession(stepIndex: Int, repeatIndex: Int) {
@@ -1363,16 +1426,36 @@ class RecorderService : Service() {
         var dialogRef: AlertDialog? = null
         var host: ServiceComposeHost? = null
         val composeHost = ServiceComposeHost().also { host = it }
+        val previousAlpha = root.alpha
+        var confirmed = false
+        val preview = opacityPreview ?: OpacityDragPreview(this).also { opacityPreview = it }
         dialogRef = ServiceDialogs.show(
             service = this,
             host = composeHost,
             widthRatio = 0.88f,
-            onDismiss = { host?.destroy() },
+            onDismiss = {
+                preview.hide()
+                host?.destroy()
+                // 拖动过程中透明度是实时生效的，取消 / 点外部关闭要还原
+                if (!confirmed) root.alpha = previousAlpha
+            },
         ) {
             RecorderSettingsDialog(
                 initialSpeed = RecorderStore.getSpeed(this),
-                initialAlpha = root.alpha,
+                initialAlpha = previousAlpha,
+                onAlphaChange = {
+                    root.alpha = it
+                    preview.update(it)
+                },
+                onDraggingChange = { dragging, value, anchor ->
+                    if (dragging && anchor != null) {
+                        preview.show(dialogRef, value, anchor, RecorderStore.MIN_WINDOW_ALPHA)
+                    } else {
+                        preview.hide()
+                    }
+                },
                 onConfirm = { speed, alpha ->
+                    confirmed = true
                     RecorderStore.setSpeed(this, speed)
                     RecorderStore.setWindowAlpha(this, alpha)
                     root.alpha = alpha
@@ -1381,6 +1464,11 @@ class RecorderService : Service() {
                     toast("设置已保存")
                 },
                 onCancel = { dialogRef?.dismiss() },
+                // 按钮列末位已有「关闭」，设置里再放一个同样的入口，两处等价
+                onCloseWindow = {
+                    dialogRef?.dismiss()
+                    requestCloseWindow()
+                },
             )
         }
     }

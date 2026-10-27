@@ -44,6 +44,22 @@ object FloatingWindowBounds {
         )
     }
 
+    /**
+     * 屏幕真正放得下窗口的区域（真实屏幕减去系统栏与 [margin]）。
+     *
+     * 与 [usableSize] 的区别是它不看窗口当前位置：旋转 / 弹框出现的瞬间，
+     * [originOffset] 可能还是旧方向的值，拿它算可用高度会让竖排误判成放不下、
+     * 翻成横排后又用同一个错值得出同样结论，锁死在横排。
+     */
+    fun screenUsableSize(windowManager: WindowManager, view: View, margin: Int): Point {
+        val display = displaySize(windowManager)
+        val insets = systemInsets(view, windowManager)
+        return Point(
+            (display.x - insets.left - insets.right - margin * 2).coerceAtLeast(0),
+            (display.y - insets.top - insets.bottom - margin * 2).coerceAtLeast(0),
+        )
+    }
+
     /** 窗口实际可用的屏幕区域（真实屏幕减去系统栏占位） */
     fun usableSize(windowManager: WindowManager, view: View, params: WindowManager.LayoutParams): Point {
         val display = displaySize(windowManager)

@@ -25,7 +25,7 @@ com.hpu.autoclicker
 │   │   ├── AppButton.kt               # 按钮唯一出口：Filled/Outlined/Text/Danger/Success 变体 + 默认/按下/禁用/加载态
 │   │   ├── AppCard.kt                 # 卡片容器：surface 底 + 可选细描边，不叠阴影，可点击带 ripple
 │   │   ├── AppText.kt                 # 语义文本：AppTitle/AppSectionTitle/AppBodyText/AppCaption/AppFieldLabel（只走 Typography）
-│   │   ├── AppTextField.kt            # 输入框：外观走 token；内核保留原生 EditText（overlay 软键盘硬约束）
+│   │   ├── AppTextField.kt            # 输入框：外观走 token；内核保留原生 EditText（overlay 软键盘硬约束）；setText 后选区按实际文本夹取（InputFilter 截短时不越界）
 │   │   ├── AppSelection.kt            # AppRadioButtonRow / AppCheckboxRow（整行可点，触控≥48dp）
 │   │   ├── AppSegmentedControl.kt     # 分段单选（三模块切换、识别方式、动作类型、滑动方向、回放倍速）；圆角用 background(shape) 画，整段矩形可点
 │   │   ├── AppBadge.kt                # 状态徽标：Primary/Success/Warning/Neutral 四色调（权限与运行状态）+ AppPillButton 同尺寸紧凑胶囊按钮
@@ -39,7 +39,7 @@ com.hpu.autoclicker
 │   │   ├── ServiceComposeHost.kt      # Service 内为 ComposeView 补齐生命周期/ViewModel/SavedState 宿主
 │   │   ├── ServiceDialogs.kt          # Service 内弹框统一宿主：平台 AlertDialog + 透明窗底 + TYPE_APPLICATION_OVERLAY + stripPlatformPanel 去双层框
 │   │   ├── OpacityDragPreview.kt      # 拖动透明度滑块时的预览：隐藏弹框窗口+遮罩，在被拖动滑块原位叠一条 20% 不透明度的百分比进行条
-│   │   ├── FloatingSquareButton.kt    # 悬浮窗方块按钮：40dp/12dp 圆角/品牌实心/4dp 投影，三个模块共用
+│   │   ├── FloatingSquareButton.kt    # 悬浮窗方块按钮：40dp/12dp 圆角/品牌实心/4dp 投影（禁用态无投影），三个模块共用
 │   │   ├── FloatingWindowBounds.kt    # 悬浮窗几何工具（三模块共用）：真实屏幕尺寸、x/y 原点偏移、可用区域、安全区间夹取
 │   │   ├── SystemBarInsets.kt         # 全面屏适配：liftBottomBarAboveNavigationBar 把铺满整屏的页面/浮层底部操作栏抬到导航栏之上
 │   │   └── OverlayViews.kt            # 原生浮层（截图框选/相册裁剪/坐标拾取）按钮与底部操作栏底色，读不到 Compose 主题故单独给一套同款视觉
@@ -75,13 +75,13 @@ com.hpu.autoclicker
     │   └── QuickDialogs.kt            # 新建/编辑快捷按钮弹框（识别方式分段开关 + 按类型分组的描边卡片 + 动作类型四段开关与动态参数 + 随机坐标偏移分组） + 脚本管理弹框（内容复用 AppScriptList / AppOpacityDialogContent）
     │
     └── recorder/                      # 「录点器」= 录制 / 回放（与另外两个模块零共享业务数据）
-        ├── RecorderService.kt         # 悬浮窗主服务 + 编辑/运行态切换 + 录制会话/草稿/现场/脚本管理/弹框逻辑
-        ├── RecorderFloatingContent.kt # 悬浮窗 Compose 内容 + RecorderFloatingUiState（编辑面板 / 运行面板）
+        ├── RecorderService.kt         # 悬浮窗主服务 + 编辑/运行态切换 + 向下/向右生长的窗口伸缩与横竖排判定 + 录制会话/草稿/现场/脚本管理/弹框逻辑
+        ├── RecorderFloatingContent.kt # 悬浮窗 Compose 内容 + RecorderFloatingUiState（主按钮在首位 + 信息条 + 按钮列/行；信息条 40dp 方块、0 步不渲染、每行独立缩字号）
         ├── RecorderBarContent.kt      # 准备 / 录制 / 暂停小条（RecorderBarState + RecorderBarPhase + 步数闪动）
         ├── RecorderCaptureOverlay.kt  # 全屏透明触摸捕获层（原生 View）：CLICK/LONG_PRESS/SWIPE 判定 + 落点圆环回显 + NOT_TOUCHABLE 暂停
         ├── RecorderPlaybackEngine.kt  # 回放引擎：delayBefore÷倍速等待 → 检查无障碍 → 逐步注入；generation 守卫 + 错误自动暂停
         ├── RecorderScript.kt          # RecorderStep/RecorderScript/RecorderStore + RecorderDraft/RecorderPlaybackSession/RecorderStateStore（原子写）
-        └── RecorderDialogs.kt         # 结束录制三选一 + 关闭三选一 + 草稿恢复三选一 + 脚本管理（复用 AppScriptList）+ 设置（倍速 + 透明度）
+        └── RecorderDialogs.kt         # 结束录制三选一 + 关闭三选一 + 草稿恢复三选一 + 脚本管理（复用 AppScriptList）+ 名称限长（中文 ≤3 / 英文数字 ≤6，InputFilter 输入层丢弃）+ 启动确认（重复次数在此配置并写回脚本）+ 设置（倍速 + 透明度 + 底部「关闭悬浮窗」；透明度复用 AppOpacityDialogContent，拖动时由宿主隐藏弹框并显示预览条）
 ```
 
 ## 3. 包职责说明
@@ -97,8 +97,8 @@ com.hpu.autoclicker
 - `RawTouch`：悬浮窗内所有按钮统一走 `pointerInteropFilter` 一条触摸链路，故不用 `Modifier.clickable`，改用手写点击判定（避免两条事件链路互吞）。
 - `ServiceComposeHost`：`Service` 与系统 `AlertDialog` 场景下 `ComposeView` 缺少 `ViewTreeLifecycleOwner`，此类补齐生命周期，并需挂到窗口 DecorView。
 - `ServiceDialogs`：三个悬浮窗服务内弹框的**唯一宿主**。平台 `AlertDialog` + `setView(ComposeView)`，窗口底透明（平台面板底会与自绘圆角面板叠成「双层框」，故用 `stripPlatformPanel()` 按 id 资源名找到 `parentPanel` 并置空），API ≥ 26 挂 `TYPE_APPLICATION_OVERLAY`，`clearFlags(FLAG_ALT_FOCUSABLE_IM)` 保证弹框内软键盘可用，`show()` 后按 `widthRatio` 设宽。
-- `FloatingSquareButton`：连点器、代点器与录点器悬浮窗按钮的**唯一样式**（40dp 见方、12dp 圆角、品牌实心底、白图标、4dp 投影、按下换 `primaryPressed`、禁用 0.4 透明度）。组件本身不消费点击，触摸仍由调用方经 `pointerInteropFilter` 传入，不 `.clip()` 以免裁掉指针分发。
-- `FloatingWindowBounds`：三个悬浮窗服务共用的几何工具。`displaySize()` 取 `getRealSize()`；`originOffset()` 用 `getLocationOnScreen - LayoutParams.x/y` 求出 x/y 原点相对屏幕的偏移（状态栏 / 侧边导航栏占位）；`usableSize()` = 真实屏幕减偏移；`safeBounds()` 再用 `systemInsets()`（`getRootWindowInsets` + API 30 `currentWindowMetrics.windowInsets`，旧版本回退导航栏高度资源，取三来源最大值，含 `displayCutout`）扣掉状态栏 / 导航栏 / 挖孔并加内边距，得到主窗口真正的落点区间；`clampOffset()` / `clampInside()` 在「区间 - 窗口」为负时贴起始边，不会抛 `IllegalArgumentException`。横竖屏下所有拖动、吸边、旋转钳制都必须使用可用区域 / 安全区，**不能再直接拿 `getRectSize()` 当可见高度**。
+- `FloatingSquareButton`：连点器、代点器与录点器悬浮窗按钮的**唯一样式**（40dp 见方、12dp 圆角、品牌实心底、白图标、4dp 投影、按下换 `primaryPressed`、禁用 0.4 透明度且投影归零）。禁用态必须关投影：半透明方块几乎不可见，残留的投影会压在相邻按钮上、看起来像两个透明按钮叠影。组件本身不消费点击，触摸仍由调用方经 `pointerInteropFilter` 传入，不 `.clip()` 以免裁掉指针分发。
+- `FloatingWindowBounds`：三个悬浮窗服务共用的几何工具。`displaySize()` 取 `getRealSize()`；`originOffset()` 用 `getLocationOnScreen - LayoutParams.x/y` 求出 x/y 原点相对屏幕的偏移（状态栏 / 侧边导航栏占位）；`usableSize()` = 真实屏幕减偏移；`screenUsableSize()` = 真实屏幕减 `systemInsets()` 与内边距，**不看窗口当前位置**，供「横排还是竖排」这类布局方向判定使用（`usableSize()` 依赖的偏移在旋转 / 弹框那一帧可能是旧值，拿它判方向会锁死在横排）；`safeBounds()` 再用 `systemInsets()`（`getRootWindowInsets` + API 30 `currentWindowMetrics.windowInsets`，旧版本回退导航栏高度资源，取三来源最大值，含 `displayCutout`）扣掉状态栏 / 导航栏 / 挖孔并加内边距，得到主窗口真正的落点区间；`clampOffset()` / `clampInside()` 在「区间 - 窗口」为负时贴起始边，不会抛 `IllegalArgumentException`。横竖屏下所有拖动、吸边、旋转钳制都必须使用可用区域 / 安全区，**不能再直接拿 `getRectSize()` 当可见高度**。
 - **吸附方向**：三个服务各持有 `dockedLeft`（竖排）与 `dockedTop`（横排）两个偏好，并用 `dockTopBottom` 记录当前吸附轴。判定跟随「长边方向」：`ui.horizontal || 屏幕横屏` 时贴上下边，其余贴左右边（横屏下的折叠方形按钮同样贴上下）。吸附加只作用于吸附轴，另一轴保留用户松手时的位置——横条不再强制靠右，可以停在左上 / 正中 / 右下。`snapToEdge()` 在松手时按窗口中心落在半屏的位置更新偏好；换轴时（进入横排、旋转）按窗口左上角所在的半区确定贴哪条边，不用宽高算中心，避免旋转瞬间拿旧方向的视口尺寸。拖动期间的安全区在 `ACTION_DOWN` 缓存进 `dragBounds`，避免每帧用滞后的 `getLocationOnScreen` 重算原点偏移。
 - `OverlayViews`：截图框选 / 相册裁剪 / 坐标拾取是原生 View 浮层（画在 Canvas 与 Drawable 上），读不到 Compose 主题，故单独提供与 Compose 侧同款的按钮（12dp 圆角、品牌实心或半透明描边、15sp 白字）与底部操作栏底色（半透明黑 + 1dp 分隔线），色值取 `OverlayPalette`；录点器的捕获层同样自行绘制，取色统一走 `OverlayPalette`。
 
@@ -111,7 +111,7 @@ com.hpu.autoclicker
 XML 侧 `res/values/colors.xml`（含 values-night）仍服务于主题/状态栏等 View 层，**色值与 Color.kt 同源**——改色必须两处同步，且浅/深两份键必须对称。主题状态栏与页面背景同色（浅色 `windowLightStatusBar=true`、深色 `false`）；首页渐变相关的 `gradient_*` / `status_bar_top` 遗留色键已删除。
 
 ### `core.components`（通用组件库）
-所有页面的 UI 只允许消费这里的组件与 theme token：按钮（五种变体四态，Outlined 为 `surface` 底 + `outlineVariant` 描边）、卡片（`surface` 底 + 可选细描边，不叠阴影）、语义文本（含 `AppFieldLabel` 表单字段标签）、输入框（**内核保留原生 EditText**，见下文红线）、单选/复选行、分段控件（整段矩形可点，圆角处不留死区）、**滑块 `AppSlider`**（胶囊轨道 + 圆形滑钮，自绘 track/thumb，交互沿用 Material3 Slider）、状态徽标 `AppBadge` 与同尺寸紧凑胶囊按钮 `AppPillButton`、空状态、**统一弹框面板 `AppDialog`**。脚本列表 `AppScriptList` 是连点器 / 代点器 / 录点器共用的跨功能组件——三个模块的脚本列表行完全一致；透明度弹框 `AppOpacityDialogContent` 由连点器与代点器共用（录点器的设置弹框自己组合 `AppSlider`，多一个回放倍速分段）；组件本身不碰存储，拖动预览条 `OpacityDragPreview` 也只负责显示。页面不允许各写一套按钮/卡片/输入框。例外：`feature/quickclick` 的全屏截图框选页、`RegionRatioBar` 与坐标拾取浮层，以及 `feature/recorder` 的全屏录制捕获层为原生 View（Service 浮层窗口场景，非 Compose 页面）。
+所有页面的 UI 只允许消费这里的组件与 theme token：按钮（五种变体四态，Outlined 为 `surface` 底 + `outlineVariant` 描边）、卡片（`surface` 底 + 可选细描边，不叠阴影）、语义文本（含 `AppFieldLabel` 表单字段标签）、输入框（**内核保留原生 EditText**，见下文红线）、单选/复选行、分段控件（整段矩形可点，圆角处不留死区）、**滑块 `AppSlider`**（胶囊轨道 + 圆形滑钮，自绘 track/thumb，交互沿用 Material3 Slider）、状态徽标 `AppBadge` 与同尺寸紧凑胶囊按钮 `AppPillButton`、空状态、**统一弹框面板 `AppDialog`**。脚本列表 `AppScriptList` 是连点器 / 代点器 / 录点器共用的跨功能组件——三个模块的脚本列表行完全一致；透明度弹框 `AppOpacityDialogContent` 由三个模块共用——连点器 / 代点器是独立弹框（连点器多一根点位滑块），录点器把它嵌在设置弹框里与回放倍速同屏；组件本身不碰存储，拖动预览条 `OpacityDragPreview` 也只负责显示。页面不允许各写一套按钮/卡片/输入框。例外：`feature/quickclick` 的全屏截图框选页、`RegionRatioBar` 与坐标拾取浮层，以及 `feature/recorder` 的全屏录制捕获层为原生 View（Service 浮层窗口场景，非 Compose 页面）。
 
 **统一弹框 `AppDialog.kt`** —— 全项目弹框的唯一外框：`AppDialogPanel(title, subtitle?, actions?, content)` 画出「标题区 → 1dp 分隔线 → 可滚动正文 → 1dp 分隔线 → 按钮区」的圆角面板（`shapes.large` + `surface` 底），整体高度上限为屏高 72%，超出部分正文内部滚动而标题与按钮始终可见；`AppDialogActions(confirmText, onConfirm, cancelText?, onCancel?, confirmVariant?, leading?)` 统一「取消（描边）在左 / 主操作（实心）在右」的按钮行，`leading` 插槽放弱化或危险操作（如「删除」）；`AppConfirmMessage(text)` 是确认框正文。危险操作把主按钮换成 `AppButtonVariant.Danger`（红色实心）。
 
@@ -126,11 +126,11 @@ XML 侧 `res/values/colors.xml`（含 values-night）仍服务于主题/状态�
 
 ### `feature.recorder`（录点器，录制 / 回放）
 
-与另外两个模块**完全独立**的第三模块：只共用通用悬浮窗框架（`FloatingSquareButton`、`RawTouch`、拖动吸边）与弹框组件，**不读写**连点器的点位/脚本，也不读写代点器的按钮/规则。**横竖屏**：`onConfigurationChanged` 后按可用高度选择竖排 / 横排（横排为「主按钮 + 右侧面板」），主窗按当前吸附轴贴边（竖排左右、横排或横屏上下，另一轴保留位置，距边 12dp，`safeBounds()` 内落点），录制小条用 `usableSize()` 钳制，350ms 复检；两轴都放不下时 toast 提示旋转设备。三种形态：
+与另外两个模块**完全独立**的第三模块：只共用通用悬浮窗框架（`FloatingSquareButton`、`RawTouch`、拖动吸边）与弹框组件，**不读写**连点器的点位/脚本，也不读写代点器的按钮/规则。**横竖屏**：`onConfigurationChanged` 后按朝向与可用长度选择竖排 / 横排（竖屏单列，横屏展开一律横排，见 `shouldUseHorizontalLayout()`；判尺寸用位置无关的 `FloatingWindowBounds.screenUsableSize()`，不用 `usableSize()`，否则旋转 / 弹框瞬间的旧原点偏移会让竖排误判成放不下并锁死在横排），主窗按当前吸附轴贴边（竖排左右、横排或横屏上下，另一轴保留位置，距边 12dp，`safeBounds()` 内落点），录制小条用 `usableSize()` 钳制，350ms 复检；两轴都放不下时 toast 提示旋转设备。悬浮窗与连点器 / 代点器同一形态：**主按钮固定在首位**（竖排顶部 / 横排左端），展开时面板向下 / 向右生长、窗口原点不动，因此展开、折叠、切换编辑/运行态都不会出现整窗平移的抽帧感（不再需要锚定补偿）。三种形态：
 
-1. **编辑态**：主按钮 + 常驻「录制 / 运行 / 脚本 / 设置 / 关闭」；第二行始终显示「脚本名 · N 步」，有草稿时追加警示提示。
+1. **编辑态**：展开后自上而下是**主按钮 + 信息条（有脚本时）+ 录制 + 启动 + 文件 + 设置 + 关闭**（横屏为同一顺序的横排，主按钮恒在首位）。信息条与主按钮等大（40dp 方块），底色用 `primaryContainer` + `onPrimaryContainer`（浅青底深青字，与实心按钮同族但表明只读，不用白色），**0 步时整个信息条不渲染**，不出现「未命名脚本」占位；「启动」在 0 步时置灰，点击先弹「开始回放」确认框；「文件」打开脚本管理；「设置」含倍速、透明度与底部红色「关闭悬浮窗」；末位「关闭」用与连点器 / 代点器相同的 `ic_exit` 图标，和设置弹框底部的入口共用 `requestCloseWindow()`（回放中先停止，有未保存步骤时三选一）。未完成草稿仍由启动弹框与「文件」入口的「恢复草稿」处理。
 2. **录制态**：先出「准备录制」小条（引导文案 + 开始 / 取消），点开始后创建 `RecorderCaptureOverlay` 全屏透明捕获层；小条切为录制态（白底红描边 + 呼吸红点 + 步数），每记一步整条闪动、捕获层在落点画扩散圆环。捕获层的位移/按压判定产出 CLICK / LONG_PRESS / SWIPE，系统栏区域不记录并提示；暂停时捕获层置 `FLAG_NOT_TOUCHABLE` 把触摸交还其它应用，「继续」不补算暂停时间；停止后弹「保存并结束 / 继续录制 / 丢弃录制」三选一。
-3. **运行态**：不渲染任何编辑控件，只显示脚本名、`第 x/y 步 · 重复 a/b`、重复次数步进器、倍速、开始/暂停/继续、停止、返回编辑。重复次数是**脚本属性**，面板内调整即写回当前脚本；每步等待 `delayBefore ÷ 倍速` 后再注入（2.0× 只把等待减半，手势时长不变），每步注入前重新检查无障碍，失败/取消自动暂停并提示。
+3. **运行态**：不渲染任何编辑控件，展开后自上而下是**主按钮 + 信息条 + 启动/暂停 + 停止 + 返回**（横屏为同一顺序的横排）。信息条只读，三行依次是脚本名、`第 X/Y 轮`、`第 N/M 步`，每行按可用宽度独立缩字号（9sp → 6sp，每档 0.5sp），数字变长时三行字号可能不同；倍速标记随 40dp 方块一起移除。暂停中图标切为继续，回放中停止才可点；**停止与暂停语义不同，保留为两个按钮**（停止复位到「待运行」并留在运行态，首按钮回到「启动」，停止键置灰）。**循环次数移出运行态**：在点「启动」前的「开始回放」确认框里配置（`RecorderScript.repeatCount`，1–999，即时写回当前脚本），运行中不提供修改入口；倍速只在设置里调，运行态只读展示。每步等待 `delayBefore ÷ 倍速` 后再注入（2.0× 只把等待减半，手势时长不变），每步注入前重新检查无障碍，失败/取消自动暂停并提示。
 
 **回放引擎 `RecorderPlaybackEngine`**：逐步调度（`handler`），`generation` 守卫丢弃过期回调，`inFlight` 防止同一步重复排程，`injectionGuard` 在注入前给悬浮窗留一帧让 `NOT_TOUCHABLE` 生效；暂停/停止只取消后续调度，已在系统里的手势无法撤回。只调用 `dispatchInjectedGesture`，不接触另外两个模块的任何代码。
 
@@ -182,7 +182,7 @@ feature.main   feature.clicker   feature.quickclick   feature.recorder
   3. 判定规则：位移未超 `touchSlop` 且按压 < `ViewConfiguration.getLongPressTimeout()` → `CLICK`；达到长按阈值 → `LONG_PRESS`（记录真实按压时长）；超过 `touchSlop` → `SWIPE`（起终点 + 总时长）。`isSystemArea()` 内（状态栏 / 底部导航栏）的触摸不记录并 toast 提示，不能静默丢弃；达到 `MAX_RECORD_STEPS` 自动暂停并提示。
   4. 回放节奏唯一来源是 `RecorderStep.delayBefore`（第一步固定为 0）：等待 `delayBefore ÷ 倍速` → 重新检查无障碍 → 注入。倍速只作用于等待，不改手势时长；`buildRecorderGesture` 把 CLICK 按压夹在 50~600ms（避免回放时被当成长按），LONG_PRESS / SWIPE 夹在 50ms~10s。
   5. 引擎守卫：`generation` 丢弃过期回调、`inFlight` 防同一步重入、`injectionGuard` 在注入前让悬浮窗 `NOT_TOUCHABLE` 生效；`dispatchInjectedGesture` 返回失败或 `onCancelled` 必须 `pauseWithError()` 并 toast，禁止静默跳过。暂停 / 停止只能阻止后续步骤，系统里已提交的手势无法撤回。
-  6. 重复次数是**脚本属性**（`RecorderScript.repeatCount`），运行面板调整后立即写回脚本并轻提示；不得放进悬浮窗全局设置。暂停在「当前步结束之后」生效，等待中的下一步立即取消；停止复位到「待运行」；切模块 / 服务重启只恢复为暂停态，绝不自动注入。
+  6. 重复次数是**脚本属性**（`RecorderScript.repeatCount`），只在点「启动」前的「开始回放」确认框里配置，确认后立即写回脚本；运行面板不显示也不允许修改，不得放进悬浮窗全局设置。暂停在「当前步结束之后」生效，等待中的下一步立即取消；停止复位到「待运行」并留在运行态；切模块 / 服务重启只恢复为暂停态，绝不自动注入。
   7. 草稿每步覆盖写（`RecorderStateStore` 先写 `.tmp` 再 `Os.rename` 原子替换）；保存脚本（结束录制 / 脚本管理 / 关闭弹框）时清理**同一脚本 id** 的草稿，「不保存关闭」「丢弃草稿」也显式删除。重新录制、丢弃录制 / 草稿、删除脚本、关闭未保存步骤均二次确认；空脚本的「运行」置灰，引擎侧再兜底「脚本没有可回放的步骤」。
 
 ## 6. 如何新增一个功能模块
