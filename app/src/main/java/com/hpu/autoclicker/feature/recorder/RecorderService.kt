@@ -762,7 +762,11 @@ class RecorderService : Service() {
                 },
                 onDiscard = {
                     dialogRef?.dismiss()
-                    confirmDiscardRecording()
+                    if ((recordingScript?.steps?.size ?: 0) == 0) {
+                        discardRecording()
+                    } else {
+                        confirmDiscardRecording()
+                    }
                 },
                 onContinue = {
                     dialogRef?.dismiss()
@@ -797,19 +801,23 @@ class RecorderService : Service() {
             confirmText = "丢弃",
             danger = true,
         ) {
-            RecorderStateStore.clearDraft(this)
-            finishRecordingSession()
-            applyCurrentScript(
-                RecorderScript.newEmpty(
-                    name = RecorderStore.defaultScriptName(this),
-                    screenW = getScreenWidth(),
-                    screenH = getScreenHeight(),
-                    orientation = resources.configuration.orientation,
-                )
-            )
-            ui.draftAvailable = false
+            discardRecording()
             toast("已丢弃本次录制")
         }
+    }
+
+    private fun discardRecording() {
+        RecorderStateStore.clearDraft(this)
+        finishRecordingSession()
+        applyCurrentScript(
+            RecorderScript.newEmpty(
+                name = RecorderStore.defaultScriptName(this),
+                screenW = getScreenWidth(),
+                screenH = getScreenHeight(),
+                orientation = resources.configuration.orientation,
+            )
+        )
+        ui.draftAvailable = false
     }
 
     private fun finishRecordingSession() {

@@ -111,7 +111,6 @@ fun RecorderStopDialog(
                     onClick = onDiscard,
                     modifier = Modifier.weight(1f),
                     variant = AppButtonVariant.DangerText,
-                    enabled = stepCount > 0,
                 )
             }
         },
@@ -120,7 +119,7 @@ fun RecorderStopDialog(
             text = if (stepCount > 0) {
                 "保存会生成本次录制的独立脚本；丢弃后这些步骤无法恢复。"
             } else {
-                "本次还没有录到步骤，可以继续录制或直接退出。"
+                "本次还没有录到步骤，丢弃会直接结束本次录制并退出。"
             }
         )
     }
