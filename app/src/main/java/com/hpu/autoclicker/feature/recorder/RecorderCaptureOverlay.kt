@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.os.Build
 import android.os.SystemClock
 import android.view.Gravity
@@ -47,7 +48,14 @@ class RecorderCaptureOverlay(
     private var root: CaptureView? = null
     private lateinit var lp: WindowManager.LayoutParams
 
+    /** 录制小条的屏幕矩形：落在其中的触摸归小条 / 应用所有，不录成步骤（null 表示没有小条） */
+    private var ignoreRect: Rect? = null
+
     fun isShowing(): Boolean = root != null
+
+    fun setIgnoreRect(rect: Rect?) {
+        ignoreRect = rect
+    }
 
     fun show() {
         if (root != null) return
@@ -157,6 +165,9 @@ class RecorderCaptureOverlay(
         private var multiTouch = false
         private var lastStepEndAt = 0L
 
+        /** 手势起点落在小条上：整段手势静默丢弃，不记录也不提示 */
+        private var ignoredByBar = false
+
         private var feedbackX = -1f
         private var feedbackY = -1f
         private var feedbackAt = 0L
@@ -226,6 +237,13 @@ class RecorderCaptureOverlay(
             }
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    val bar = ignoreRect
+                    if (bar != null && bar.contains(event.rawX.toInt(), event.rawY.toInt())) {
+                        // 小条的非按钮区域：小条自己不收、捕获层也不录，直接吞掉
+                        resetGesture()
+                        ignoredByBar = true
+                        return true
+                    }
                     downX = event.rawX
                     downY = event.rawY
                     lastX = downX
@@ -237,12 +255,14 @@ class RecorderCaptureOverlay(
                 }
 
                 MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (ignoredByBar) return true
                     multiTouch = true
                     listener.onIgnored("多指手势暂不支持，本次未记录")
                     return true
                 }
 
                 MotionEvent.ACTION_MOVE -> {
+                    if (ignoredByBar) return true
                     if (event.pointerCount > 1) multiTouch = true
                     lastX = event.getX(0)
                     lastY = event.getY(0)
@@ -255,6 +275,10 @@ class RecorderCaptureOverlay(
                 }
 
                 MotionEvent.ACTION_UP -> {
+                    if (ignoredByBar) {
+                        resetGesture()
+                        return true
+                    }
                     if (multiTouch) {
                         resetGesture()
                         return true
@@ -309,6 +333,7 @@ class RecorderCaptureOverlay(
             moved = false
             multiTouch = false
             downAt = 0L
+            ignoredByBar = false
         }
     }
 }

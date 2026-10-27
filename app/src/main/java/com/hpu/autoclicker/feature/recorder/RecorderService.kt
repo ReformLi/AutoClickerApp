@@ -30,6 +30,7 @@ import com.hpu.autoclicker.core.ui.FloatingWindowBounds
 import com.hpu.autoclicker.core.ui.OpacityDragPreview
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
 import com.hpu.autoclicker.core.ui.ServiceDialogs
+import com.hpu.autoclicker.core.ui.WindowTouchRegion
 
 /**
  * 录点器悬浮服务 —— 与连点器 / 代点器完全独立：
@@ -104,6 +105,12 @@ class RecorderService : Service() {
     private var barDownRawY = 0f
     private var barInitX = 0
     private var barInitY = 0
+
+    /** 小条窗口里真正接收触摸的区域（拖动把手 + 两个按钮，窗口坐标），其余点穿 */
+    private var barTouchRegion: WindowTouchRegion? = null
+
+    private val barLayoutListener =
+        View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> syncCaptureIgnoreRect() }
 
     private var captureOverlay: RecorderCaptureOverlay? = null
     private var replayTimeout: Runnable? = null
@@ -850,6 +857,7 @@ class RecorderService : Service() {
                     onTogglePause = { togglePauseRecording() },
                     onStop = { requestStopRecording() },
                     onDragTouch = { event -> onBarTouch(event) },
+                    onTouchLayout = { rects -> applyBarTouchRects(rects) },
                 )
             }
         }
@@ -871,6 +879,10 @@ class RecorderService : Service() {
             barView = view
             barHost = host
             barAdded = true
+            // 触摸区域由 Compose 上报；上报前整窗可点，首帧后收敛到把手 + 按钮
+            barTouchRegion = WindowTouchRegion(view).also { it.attach() }
+            view.addOnLayoutChangeListener(barLayoutListener)
+            view.post { syncCaptureIgnoreRect() }
         } catch (e: Exception) {
             android.util.Log.e("Recorder", "录制小条添加失败", e)
             host.destroy()
@@ -882,6 +894,7 @@ class RecorderService : Service() {
         if (view != null) {
             barX = barLp.x
             barY = barLp.y
+            view.removeOnLayoutChangeListener(barLayoutListener)
             try {
                 windowManager.removeView(view)
             } catch (e: Exception) {
@@ -890,8 +903,33 @@ class RecorderService : Service() {
         }
         barView = null
         barAdded = false
+        barTouchRegion = null
+        captureOverlay?.setIgnoreRect(null)
         barHost?.destroy()
         barHost = null
+    }
+
+    /** Compose 上报可点矩形：窗口触摸区域 = 把手 + 两个按钮，其它位置交给下层窗口 */
+    private fun applyBarTouchRects(rects: List<Rect>) {
+        barTouchRegion?.setRects(rects)
+    }
+
+    /**
+     * 录制期间捕获层在小条下面：把整条小条的屏幕矩形告诉它，
+     * 落在小条非按钮区域的触摸直接忽略，避免录出指向小条本身的幽灵步骤。
+     */
+    private fun syncCaptureIgnoreRect() {
+        val overlay = captureOverlay ?: return
+        val view = barView
+        if (view == null || !barAdded || view.width == 0) {
+            overlay.setIgnoreRect(null)
+            return
+        }
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        overlay.setIgnoreRect(
+            Rect(location[0], location[1], location[0] + view.width, location[1] + view.height)
+        )
     }
 
     private fun onBarTouch(event: MotionEvent): Boolean = when (event.actionMasked) {
@@ -918,6 +956,7 @@ class RecorderService : Service() {
                 } catch (e: Exception) {
                     android.util.Log.e("Recorder", "录制小条移动失败", e)
                 }
+                syncCaptureIgnoreRect()
             }
             true
         }
@@ -925,6 +964,7 @@ class RecorderService : Service() {
         MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
             barX = barLp.x
             barY = barLp.y
+            syncCaptureIgnoreRect()
             true
         }
 
@@ -949,6 +989,7 @@ class RecorderService : Service() {
                 android.util.Log.e("Recorder", "录制小条夹取失败", e)
             }
         }
+        syncCaptureIgnoreRect()
     }
 
     // ==================== 回放 ====================
