@@ -41,6 +41,7 @@ com.hpu.autoclicker
 │   │   ├── OpacityDragPreview.kt      # 拖动透明度滑块时的预览：隐藏弹框窗口+遮罩，在被拖动滑块原位叠一条 20% 不透明度的百分比进行条
 │   │   ├── FloatingSquareButton.kt    # 悬浮窗方块按钮：40dp/12dp 圆角/品牌实心/4dp 投影（禁用态无投影），三个模块共用
 │   │   ├── FloatingWindowBounds.kt    # 悬浮窗几何工具（三模块共用）：真实屏幕尺寸、x/y 原点偏移、可用区域、安全区间夹取
+│   │   ├── WindowTouchRegion.kt       # 窗口触摸区域：反射注册隐藏 API 的 TOUCHABLE_INSETS_REGION，把悬浮窗里不接收触摸的部分挖掉（失败退回整窗可点）
 │   │   ├── SystemBarInsets.kt         # 全面屏适配：liftBottomBarAboveNavigationBar 把铺满整屏的页面/浮层底部操作栏抬到导航栏之上
 │   │   └── OverlayViews.kt            # 原生浮层（截图框选/相册裁剪/坐标拾取）按钮与底部操作栏底色，读不到 Compose 主题故单独给一套同款视觉
 │   └── theme/                         # 设计 token（阶段一建立，页面唯一取值来源）
@@ -77,8 +78,8 @@ com.hpu.autoclicker
     └── recorder/                      # 「录点器」= 录制 / 回放（与另外两个模块零共享业务数据）
         ├── RecorderService.kt         # 悬浮窗主服务 + 编辑/运行态切换 + 向下/向右生长的窗口伸缩与横竖排判定 + 录制会话/草稿/现场/脚本管理/弹框逻辑
         ├── RecorderFloatingContent.kt # 悬浮窗 Compose 内容 + RecorderFloatingUiState（主按钮在首位 + 信息条 + 按钮列/行；信息条 40dp 方块、0 步不渲染、每行独立缩字号）
-        ├── RecorderBarContent.kt      # 准备 / 录制 / 暂停小条（RecorderBarState + RecorderBarPhase + 步数闪动）
-        ├── RecorderCaptureOverlay.kt  # 全屏透明触摸捕获层（原生 View）：CLICK/LONG_PRESS/SWIPE 判定 + 落点圆环回显 + NOT_TOUCHABLE 暂停
+        ├── RecorderBarContent.kt      # 准备 / 录制 / 暂停小条（RecorderBarState + RecorderBarPhase + 步数闪动；底色固定 50% 半透明，仅 ≡ 把手与两个按钮接收触摸，可点矩形按窗口坐标经 onTouchLayout 上报）
+        ├── RecorderCaptureOverlay.kt  # 全屏透明触摸捕获层（原生 View）：CLICK/LONG_PRESS/SWIPE 判定 + 落点圆环回显 + NOT_TOUCHABLE 暂停 + 忽略小条矩形内的触摸（避免幽灵步骤）
         ├── RecorderPlaybackEngine.kt  # 回放引擎：delayBefore÷倍速等待 → 检查无障碍 → 逐步注入；generation 守卫 + 错误自动暂停
         ├── RecorderScript.kt          # RecorderStep/RecorderScript/RecorderStore + RecorderDraft/RecorderPlaybackSession/RecorderStateStore（原子写）
         └── RecorderDialogs.kt         # 结束录制三选一 + 关闭三选一 + 草稿恢复三选一 + 脚本管理（复用 AppScriptList）+ 名称限长（中文 ≤3 / 英文数字 ≤6，InputFilter 输入层丢弃）+ 启动确认（重复次数在此配置并写回脚本）+ 设置（倍速 + 透明度 + 底部「关闭悬浮窗」；透明度复用 AppOpacityDialogContent，拖动时由宿主隐藏弹框并显示预览条）
@@ -129,7 +130,7 @@ XML 侧 `res/values/colors.xml`（含 values-night）仍服务于主题/状态�
 与另外两个模块**完全独立**的第三模块：只共用通用悬浮窗框架（`FloatingSquareButton`、`RawTouch`、拖动吸边）与弹框组件，**不读写**连点器的点位/脚本，也不读写代点器的按钮/规则。**横竖屏**：`onConfigurationChanged` 后按朝向与可用长度选择竖排 / 横排（竖屏单列，横屏展开一律横排，见 `shouldUseHorizontalLayout()`；判尺寸用位置无关的 `FloatingWindowBounds.screenUsableSize()`，不用 `usableSize()`，否则旋转 / 弹框瞬间的旧原点偏移会让竖排误判成放不下并锁死在横排），主窗按当前吸附轴贴边（竖排左右、横排或横屏上下，另一轴保留位置，距边 12dp，`safeBounds()` 内落点），录制小条用 `usableSize()` 钳制，350ms 复检；两轴都放不下时 toast 提示旋转设备。悬浮窗与连点器 / 代点器同一形态：**主按钮固定在首位**（竖排顶部 / 横排左端），展开时面板向下 / 向右生长、窗口原点不动，因此展开、折叠、切换编辑/运行态都不会出现整窗平移的抽帧感（不再需要锚定补偿）。三种形态：
 
 1. **编辑态**：展开后自上而下是**主按钮 + 信息条（有脚本时）+ 录制 + 启动 + 文件 + 设置 + 关闭**（横屏为同一顺序的横排，主按钮恒在首位）。信息条与主按钮等大（40dp 方块），底色用 `primaryContainer` + `onPrimaryContainer`（浅青底深青字，与实心按钮同族但表明只读，不用白色），**0 步时整个信息条不渲染**，不出现「未命名脚本」占位；「启动」在 0 步时置灰，点击先弹「开始回放」确认框；「文件」打开脚本管理；「设置」含倍速、透明度与底部红色「关闭悬浮窗」；末位「关闭」用与连点器 / 代点器相同的 `ic_exit` 图标，和设置弹框底部的入口共用 `requestCloseWindow()`（回放中先停止，有未保存步骤时三选一）。未完成草稿仍由启动弹框与「文件」入口的「恢复草稿」处理。
-2. **录制态**：先出「准备录制」小条（引导文案 + 开始 / 取消），点开始后创建 `RecorderCaptureOverlay` 全屏透明捕获层；小条切为录制态（白底红描边 + 呼吸红点 + 步数），每记一步整条闪动、捕获层在落点画扩散圆环。捕获层的位移/按压判定产出 CLICK / LONG_PRESS / SWIPE，系统栏区域不记录并提示；暂停时捕获层置 `FLAG_NOT_TOUCHABLE` 把触摸交还其它应用，「继续」不补算暂停时间；停止后弹「保存并结束 / 继续录制 / 丢弃录制」三选一。
+2. **录制态**：先出「准备录制」小条（引导文案 + 开始 / 取消），点开始后创建 `RecorderCaptureOverlay` 全屏透明捕获层；小条切为录制态（白底红描边 + 呼吸红点 + 步数），每记一步整条闪动、捕获层在落点画扩散圆环。小条底色固定 50% 半透明（文字 / 按钮不透明，不跟随设置里的悬浮窗透明度）；**只有 ≡ 把手（36dp，按住拖动移动小条）与右侧两个按钮接收触摸**，其余区域通过 `core/ui/WindowTouchRegion`（反射注册隐藏 API `TOUCHABLE_INSETS_REGION`，失败退回整窗可点）从窗口触摸区域里挖掉，点击直接落到底层应用；录制态下捕获层在小条下面，Service 把小条的屏幕矩形（拖动 / 旋转时刷新）作为忽略区同步给 `RecorderCaptureOverlay`，落在小条非按钮区域的触摸既不记录也不提示。捕获层的位移/按压判定产出 CLICK / LONG_PRESS / SWIPE，系统栏区域不记录并提示；暂停时捕获层置 `FLAG_NOT_TOUCHABLE` 把触摸交还其它应用，「继续」不补算暂停时间；停止后弹「保存并结束 / 继续录制 / 丢弃录制」三选一。
 3. **运行态**：不渲染任何编辑控件，展开后自上而下是**主按钮 + 信息条 + 启动/暂停 + 停止 + 返回**（横屏为同一顺序的横排）。信息条只读，三行依次是脚本名、`第 X/Y 轮`、`第 N/M 步`，每行按可用宽度独立缩字号（9sp → 6sp，每档 0.5sp），数字变长时三行字号可能不同；倍速标记随 40dp 方块一起移除。暂停中图标切为继续，回放中停止才可点；**停止与暂停语义不同，保留为两个按钮**（停止复位到「待运行」并留在运行态，首按钮回到「启动」，停止键置灰）。**循环次数移出运行态**：在点「启动」前的「开始回放」确认框里配置（`RecorderScript.repeatCount`，1–999，即时写回当前脚本），运行中不提供修改入口；倍速只在设置里调，运行态只读展示。每步等待 `delayBefore ÷ 倍速` 后再注入（2.0× 只把等待减半，手势时长不变），每步注入前重新检查无障碍，失败/取消自动暂停并提示。
 
 **回放引擎 `RecorderPlaybackEngine`**：逐步调度（`handler`），`generation` 守卫丢弃过期回调，`inFlight` 防止同一步重复排程，`injectionGuard` 在注入前给悬浮窗留一帧让 `NOT_TOUCHABLE` 生效；暂停/停止只取消后续调度，已在系统里的手势无法撤回。只调用 `dispatchInjectedGesture`，不接触另外两个模块的任何代码。
