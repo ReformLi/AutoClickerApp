@@ -79,7 +79,7 @@ com.hpu.autoclicker
         ├── RecorderService.kt         # 悬浮窗主服务 + 编辑/运行态切换 + 向下/向右生长的窗口伸缩与横竖排判定 + 录制会话/草稿/现场/脚本管理/弹框逻辑
         ├── RecorderFloatingContent.kt # 悬浮窗 Compose 内容 + RecorderFloatingUiState（主按钮在首位 + 信息条 + 按钮列/行；信息条 40dp 方块、0 步不渲染、每行独立缩字号）
         ├── RecorderBarContent.kt      # 准备 / 录制 / 暂停小条（RecorderBarState + RecorderBarPhase + 步数闪动；底色固定 50% 半透明，仅 ≡ 把手与两个按钮接收触摸，可点矩形按窗口坐标经 onTouchLayout 上报）
-        ├── RecorderCaptureOverlay.kt  # 全屏透明触摸捕获层（原生 View）：CLICK/LONG_PRESS/SWIPE 判定 + 落点圆环回显 + NOT_TOUCHABLE 暂停 + 忽略小条矩形内的触摸（避免幽灵步骤）
+        ├── RecorderCaptureOverlay.kt  # 全屏透明触摸捕获层（原生 View）：CLICK/LONG_PRESS/SWIPE 判定 + 落点圆环回显（只重绘圆环所在矩形） + NOT_TOUCHABLE 暂停 + 忽略小条矩形内的触摸（避免幽灵步骤）
         ├── RecorderPlaybackEngine.kt  # 回放引擎：delayBefore÷倍速等待 → 检查无障碍 → 逐步注入；generation 守卫 + 错误自动暂停
         ├── RecorderScript.kt          # RecorderStep/RecorderScript/RecorderStore + RecorderDraft/RecorderPlaybackSession/RecorderStateStore（原子写）
         └── RecorderDialogs.kt         # 结束录制三选一（0 步时保留「丢弃录制」） + 关闭三选一 + 草稿恢复三选一 + 脚本管理（复用 AppScriptList）+ 名称限长（中文 ≤3 / 英文数字 ≤6，InputFilter 输入层丢弃）+ 启动确认（重复次数在此配置并写回脚本）+ 设置（倍速 + 透明度 + 底部「关闭悬浮窗」；透明度复用 AppOpacityDialogContent，拖动时由宿主隐藏弹框并显示预览条）
@@ -135,7 +135,7 @@ XML 侧 `res/values/colors.xml`（含 values-night）仍服务于主题/状态�
 
 **回放引擎 `RecorderPlaybackEngine`**：逐步调度（`handler`），`generation` 守卫丢弃过期回调，`inFlight` 防止同一步重复排程，`injectionGuard` 在注入前给悬浮窗留一帧让 `NOT_TOUCHABLE` 生效；暂停/停止只取消后续调度，已在系统里的手势无法撤回。只调用 `dispatchInjectedGesture`，不接触另外两个模块的任何代码。
 
-**脚本与现场**：`RecorderScript.kt` 里 `RecorderStep` / `RecorderScript`（带 `version`、屏幕尺寸与方向、`repeatCount`）由 `RecorderStore` 存 `recorder_config.xml`（`scripts` / `speed` / `window_alpha`）；`RecorderDraft` 每步落盘 `filesDir/recorder/draft.json`；`RecorderPlaybackSession` 存 `filesDir/recorder/session.json`，两者都先写 `.tmp` 再 `Os.rename` 原子替换。切模块或服务重启后只恢复为**暂停态**，绝不自动注入；保存脚本时同步清理同一脚本 id 的草稿。
+**脚本与现场**：`RecorderScript.kt` 里 `RecorderStep` / `RecorderScript`（带 `version`、屏幕尺寸与方向、`repeatCount`）由 `RecorderStore` 存 `recorder_config.xml`（`scripts` / `speed` / `window_alpha`）；`RecorderDraft` 由 Service 的后台单线程合并写入 `filesDir/recorder/draft.json`（250ms 合并窗口，暂停 / 停止 / 销毁时立即补写）；`RecorderPlaybackSession` 存 `filesDir/recorder/session.json`，两者都先写 `.tmp` 再 `Os.rename` 原子替换。切模块或服务重启后只恢复为**暂停态**，绝不自动注入；保存脚本时同步清理同一脚本 id 的草稿。
 
 ## 4. 依赖方向
 
@@ -184,7 +184,8 @@ feature.main   feature.clicker   feature.quickclick   feature.recorder
   4. 回放节奏唯一来源是 `RecorderStep.delayBefore`（第一步固定为 0）：等待 `delayBefore ÷ 倍速` → 重新检查无障碍 → 注入。倍速只作用于等待，不改手势时长；`buildRecorderGesture` 把 CLICK 按压夹在 50~600ms（避免回放时被当成长按），LONG_PRESS / SWIPE 夹在 50ms~10s。
   5. 引擎守卫：`generation` 丢弃过期回调、`inFlight` 防同一步重入、`injectionGuard` 在注入前让悬浮窗 `NOT_TOUCHABLE` 生效；`dispatchInjectedGesture` 返回失败或 `onCancelled` 必须 `pauseWithError()` 并 toast，禁止静默跳过。暂停 / 停止只能阻止后续步骤，系统里已提交的手势无法撤回。
   6. 重复次数是**脚本属性**（`RecorderScript.repeatCount`），只在点「启动」前的「开始回放」确认框里配置，确认后立即写回脚本；运行面板不显示也不允许修改，不得放进悬浮窗全局设置。暂停在「当前步结束之后」生效，等待中的下一步立即取消；停止复位到「待运行」并留在运行态；切模块 / 服务重启只恢复为暂停态，绝不自动注入。
-  7. 草稿每步覆盖写（`RecorderStateStore` 先写 `.tmp` 再 `Os.rename` 原子替换）；保存脚本（结束录制 / 脚本管理 / 关闭弹框）时清理**同一脚本 id** 的草稿，「不保存关闭」「丢弃草稿」也显式删除。重新录制、丢弃录制（有步骤时）/ 草稿、删除脚本、关闭未保存步骤均二次确认；空脚本的「运行」置灰，引擎侧再兜底「脚本没有可回放的步骤」。
+  7. 草稿写入走 `RecorderService` 的单线程 `draftWriter` 并做 250ms 合并：每步只更新 `pendingDraft` 快照，`persistDraft()` 不碰磁盘；暂停 / 停止 / `onDestroy` 用 `flushDraft()` 立即补写（销毁时同步写），主线程录制路径上不能出现文件 I/O。删除草稿统一走 `discardDraft()`：先取消挂起的写入，再把 `clearDraft` 排到同一个线程末尾，避免迟到的写入把刚删掉的草稿复活。落盘本身仍是 `RecorderStateStore` 先写 `.tmp` 再 `Os.rename` 原子替换；保存脚本（结束录制 / 脚本管理 / 关闭弹框）时清理**同一脚本 id** 的草稿，「不保存关闭」「丢弃草稿」也显式删除。重新录制、丢弃录制（有步骤时）/ 草稿、删除脚本、关闭未保存步骤均二次确认；空脚本的「运行」置灰，引擎侧再兜底「脚本没有可回放的步骤」。
+  8. 录制跟手感：每次触摸都由捕获层消费后用无障碍手势回显，`INJECTION_SWITCH_DELAY_MS`（切 `NOT_TOUCHABLE` 后等多久再注入）保持 24ms 左右即可——更长只会增加点击延迟，不能省掉；落点圆环用 `invalidate(rect)` 只重绘自身约 64dp 的矩形，连续点击时先擦上一圈再画新圈，不要改回 `invalidate()` 全屏重绘。
 
 ## 6. 如何新增一个功能模块
 

@@ -172,6 +172,9 @@ class RecorderCaptureOverlay(
         private var feedbackY = -1f
         private var feedbackAt = 0L
 
+        /** 圆环最大外径：只重绘它所在的矩形，避免每帧整屏重绘 */
+        private val ringRadius = 32f * density + feedbackPaint.strokeWidth
+
         /** 注入回显期间为 true：吞掉落在本层的注入手势，不录成新步骤 */
         var suppressInput = false
 
@@ -219,15 +222,31 @@ class RecorderCaptureOverlay(
                     (10f + 22f * progress) * density,
                     feedbackPaint,
                 )
-                postInvalidateOnAnimation()
+                postInvalidateOnAnimation(
+                    (feedbackX - ringRadius).toInt(),
+                    (feedbackY - ringRadius).toInt(),
+                    (feedbackX + ringRadius).toInt(),
+                    (feedbackY + ringRadius).toInt(),
+                )
             }
         }
 
         private fun showFeedback(x: Float, y: Float) {
+            // 上一圈可能还留着未淡完的像素，先把它所在矩形擦掉
+            if (feedbackX >= 0f) invalidateRing(feedbackX, feedbackY)
             feedbackX = x
             feedbackY = y
             feedbackAt = SystemClock.uptimeMillis()
-            invalidate()
+            invalidateRing(x, y)
+        }
+
+        private fun invalidateRing(x: Float, y: Float) {
+            invalidate(
+                (x - ringRadius).toInt(),
+                (y - ringRadius).toInt(),
+                (x + ringRadius).toInt(),
+                (y + ringRadius).toInt(),
+            )
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {

@@ -31,6 +31,7 @@ import com.hpu.autoclicker.core.ui.OpacityDragPreview
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
 import com.hpu.autoclicker.core.ui.ServiceDialogs
 import com.hpu.autoclicker.core.ui.WindowTouchRegion
+import java.util.concurrent.Executors
 
 /**
  * 录点器悬浮服务 —— 与连点器 / 代点器完全独立：
@@ -52,8 +53,11 @@ class RecorderService : Service() {
         private const val NOTIFICATION_ID = 3
         private const val CHANNEL_ID = "recorder"
 
-        /** 切换 NOT_TOUCHABLE 后等一帧多再注入，避免回显手势落回捕获层 */
-        private const val INJECTION_SWITCH_DELAY_MS = 48L
+        /** 切换 NOT_TOUCHABLE 后等一帧多再注入，避免回显手势落回捕获层；时间越短，录制跟手感越好 */
+        private const val INJECTION_SWITCH_DELAY_MS = 24L
+
+        /** 草稿写入的合并窗口：录制中每步只更新快照，避免每次抬手都做一次磁盘 I/O */
+        private const val DRAFT_WRITE_DEBOUNCE_MS = 250L
     }
 
     private enum class RecordSession { NONE, READY, RECORDING, PAUSED }
@@ -117,6 +121,20 @@ class RecorderService : Service() {
     private var opacityPreview: OpacityDragPreview? = null
 
     private val handler = Handler(Looper.getMainLooper())
+
+    // 草稿全部落到这个单线程里按顺序执行，主线程只负责提供最新快照
+    private val draftWriter = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "recorder-draft")
+    }
+    private var draftWriteScheduled = false
+    private var pendingDraft: RecorderDraft? = null
+
+    private val draftWriteTask = Runnable {
+        draftWriteScheduled = false
+        val draft = pendingDraft ?: return@Runnable
+        pendingDraft = null
+        draftWriter.execute { RecorderStateStore.saveDraft(applicationContext, draft) }
+    }
 
     private val engineListener: RecorderPlaybackEngine.Listener =
         object : RecorderPlaybackEngine.Listener {
@@ -266,6 +284,7 @@ class RecorderService : Service() {
         replayTimeout = null
         if (recordSession == RecordSession.RECORDING || recordSession == RecordSession.PAUSED) {
             persistDraft()
+            flushDraft(blocking = true)
         }
         if (ui.playing) {
             persistSession(engine.currentStepIndex, engine.currentRepeatIndex)
@@ -286,6 +305,7 @@ class RecorderService : Service() {
         }
         composeHost.destroy()
         handler.removeCallbacksAndMessages(null)
+        draftWriter.shutdown()
         sendBroadcast(Intent("com.hpu.autoclicker.SERVICE_STOPPED").setPackage(packageName))
         super.onDestroy()
     }
@@ -635,7 +655,7 @@ class RecorderService : Service() {
             toast("无法创建录制层，请检查悬浮窗权限后重试")
             return
         }
-        if (!recordedFromDraft) RecorderStateStore.clearDraft(this)
+        if (!recordedFromDraft) discardDraft()
         captureOverlay = overlay
         // 捕获层会盖住户窗口；先移除小条，添加捕获层后再把小条放回最上层
         removeBar()
@@ -720,6 +740,7 @@ class RecorderService : Service() {
         captureOverlay?.setTouchable(false)
         captureOverlay?.setRecordingVisual(false)
         persistDraft()
+        flushDraft()
     }
 
     private fun resumeRecording() {
@@ -784,7 +805,7 @@ class RecorderService : Service() {
             hint = "输入脚本名称",
         ) { name ->
             saveScriptNamed(script, name) { saved ->
-                RecorderStateStore.clearDraft(this)
+                discardDraft()
                 finishRecordingSession()
                 applyCurrentScript(saved)
                 ui.draftAvailable = false
@@ -807,7 +828,7 @@ class RecorderService : Service() {
     }
 
     private fun discardRecording() {
-        RecorderStateStore.clearDraft(this)
+        discardDraft()
         finishRecordingSession()
         applyCurrentScript(
             RecorderScript.newEmpty(
@@ -1225,7 +1246,7 @@ class RecorderService : Service() {
             confirmText = "丢弃",
             danger = true,
         ) {
-            RecorderStateStore.clearDraft(this)
+            discardDraft()
             applyCurrentScript(null)
             ui.draftAvailable = false
             toast("已丢弃草稿")
@@ -1394,7 +1415,7 @@ class RecorderService : Service() {
             val saved = RecorderStore.saveScript(this, script.copy(name = trimmed))
             // 草稿与已保存脚本是同一份内容时即失效，否则下次启动会重复提示恢复
             if (RecorderStateStore.loadDraft(this)?.id == saved.id) {
-                RecorderStateStore.clearDraft(this)
+                discardDraft()
                 ui.draftAvailable = false
             }
             onSaved(saved)
@@ -1462,7 +1483,7 @@ class RecorderService : Service() {
                 onDiscardClose = {
                     dialogRef?.dismiss()
                     // 用户明确放弃这些步骤，草稿也一并清掉，避免下次启动又提示恢复
-                    RecorderStateStore.clearDraft(this)
+                    discardDraft()
                     ui.draftAvailable = false
                     stopSelf()
                 },
@@ -1596,8 +1617,32 @@ class RecorderService : Service() {
     private fun persistDraft() {
         val script = recordingScript ?: return
         if (script.steps.isEmpty()) return
-        RecorderStateStore.saveDraft(this, RecorderDraft.from(script, recordingStartedAt))
         ui.draftAvailable = true
+        pendingDraft = RecorderDraft.from(script, recordingStartedAt)
+        if (draftWriteScheduled) return
+        draftWriteScheduled = true
+        handler.postDelayed(draftWriteTask, DRAFT_WRITE_DEBOUNCE_MS)
+    }
+
+    /** 暂停 / 停止 / 服务销毁：不等合并窗口，把快照立刻写掉（服务销毁时直接同步写） */
+    private fun flushDraft(blocking: Boolean = false) {
+        handler.removeCallbacks(draftWriteTask)
+        draftWriteScheduled = false
+        val draft = pendingDraft ?: return
+        pendingDraft = null
+        if (blocking) {
+            RecorderStateStore.saveDraft(applicationContext, draft)
+        } else {
+            draftWriter.execute { RecorderStateStore.saveDraft(applicationContext, draft) }
+        }
+    }
+
+    /** 删除草稿：先取消挂起的写入，再排到同一个单线程末尾，避免被迟到的写入复活 */
+    private fun discardDraft() {
+        handler.removeCallbacks(draftWriteTask)
+        draftWriteScheduled = false
+        pendingDraft = null
+        draftWriter.execute { RecorderStateStore.clearDraft(applicationContext) }
     }
 
     private fun startForegroundIfNeeded() {
