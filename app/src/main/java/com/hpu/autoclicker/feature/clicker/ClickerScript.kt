@@ -209,7 +209,10 @@ object ClickerScriptStore {
     private fun migrateLegacy(context: Context, p: SharedPreferences) {
         val file = File(context.filesDir, "click_points.json")
         try {
-            val scripts = readScripts(context).scripts
+            val read = readScripts(context)
+            // 迁移同样会整表覆盖写：现有 JSON 若有坏条目，先留档再动盘
+            keepBackupIfLossy(context, read)
+            val scripts = read.scripts
             if (file.exists() && scripts.none { it.name == LEGACY_SCRIPT_NAME }) {
                 val arr = JSONArray(file.readText())
                 val points = mutableListOf<ClickerPointData>()

@@ -59,9 +59,11 @@ class ImagePickActivity : ComponentActivity() {
 
     override fun onDestroy() {
         // 兜底：若中途被关闭而未走 finishWithResult，也必须通知服务恢复弹框。
-        // 不看 isFinishing：被系统回收 / 配置变更销毁时同样要通知，否则服务的
-        // capturePending 一直是真，隐藏的悬浮窗与弹框再也回不来。
-        if (!resultDelivered) {
+        // 不看 isFinishing：被系统回收时同样要通知，否则服务的 capturePending 一直是真，
+        // 隐藏的悬浮窗与弹框再也回不来。
+        // 但配置变更（旋转）会重建本页并沿用同一个 pendingResult 继续选图，
+        // 这时回传「取消」会把用户正在进行的选图结果丢掉，必须跳过。
+        if (!resultDelivered && !isChangingConfigurations) {
             pendingResult?.invoke(null, 0, 0)
             pendingResult = null
         }

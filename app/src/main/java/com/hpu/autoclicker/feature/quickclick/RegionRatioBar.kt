@@ -2,6 +2,7 @@ package com.hpu.autoclicker.feature.quickclick
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Service
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -33,6 +34,7 @@ import com.hpu.autoclicker.core.theme.AutoClickerTheme
 import com.hpu.autoclicker.core.theme.Dimens
 import com.hpu.autoclicker.core.theme.OverlayPalette
 import com.hpu.autoclicker.core.ui.ServiceComposeHost
+import com.hpu.autoclicker.core.ui.ServiceDialogs
 import com.hpu.autoclicker.core.ui.stripPlatformPanel
 import kotlin.math.roundToInt
 
@@ -199,11 +201,17 @@ class RegionRatioBar(
 
         val dialog = AlertDialog.Builder(context).setView(compose).create()
         dialogRef = dialog
+        // Service 场景下这个自建弹框也要登记，服务销毁时统一收掉，否则会留在桌面上点不掉
+        val ownerService = context as? Service
+        ownerService?.let { ServiceDialogs.track(it, dialog) }
 
         // 窗口根视图挂宿主 Owner（必须在 show() 之前，原因见 ServiceComposeHost.attachWindowRoot）
         dialog.window?.decorView?.let { host.attachWindowRoot(it) }
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
-        dialog.setOnDismissListener { host.destroy() }
+        dialog.setOnDismissListener {
+            host.destroy()
+            ownerService?.let { ServiceDialogs.reportDismissed(it, dialog) }
+        }
 
         // Service 浮层场景必须显式指定 overlay 窗口类型，否则 BadTokenException
         if (context !is Activity) {

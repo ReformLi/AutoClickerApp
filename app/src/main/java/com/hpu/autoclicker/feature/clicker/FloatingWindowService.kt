@@ -1498,13 +1498,15 @@ class FloatingWindowService : Service() {
                     message = "脚本「$scriptName」已存在，是否覆盖？",
                     confirmText = "覆盖",
                 ) {
-                    ClickerScriptStore.saveScript(this, scriptName, collectPoints())
-                    currentScriptName = scriptName
-                    onChanged()
-                    Toast.makeText(this, "已覆盖脚本「$scriptName」", Toast.LENGTH_SHORT).show()
+                    if (ClickerScriptStore.saveScript(this, scriptName, collectPoints())) {
+                        currentScriptName = scriptName
+                        onChanged()
+                        Toast.makeText(this, "已覆盖脚本「$scriptName」", Toast.LENGTH_SHORT).show()
+                    }
                 }
             } else {
-                ClickerScriptStore.saveScript(this, scriptName, collectPoints())
+                // 保存被拒（超出脚本 / 点位上限制）时 store 已提示原因，这里不能再报「已保存」
+                if (!ClickerScriptStore.saveScript(this, scriptName, collectPoints())) return@showInputDialog
                 currentScriptName = scriptName
                 onChanged()
                 Toast.makeText(this, "已保存脚本「$scriptName」", Toast.LENGTH_SHORT).show()

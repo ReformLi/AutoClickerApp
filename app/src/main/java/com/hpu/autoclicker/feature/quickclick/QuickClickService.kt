@@ -550,7 +550,8 @@ class QuickClickService : Service() {
     private fun saveAndClose() {
         val existingName = currentScriptName
         if (existingName != null) {
-            QuickClickStore.saveScript(this, existingName, configs)
+            // 保存被拒（超出脚本 / 按钮上限）时 store 已提示原因，此时不能关窗，否则未保存的按钮直接丢
+            if (!QuickClickStore.saveScript(this, existingName, configs)) return
             savedSnapshot = configs.toList()
             Toast.makeText(this, "已保存脚本「$existingName」", Toast.LENGTH_SHORT).show()
             stopSelf()
@@ -558,11 +559,12 @@ class QuickClickService : Service() {
         }
         showInputDialog("保存脚本", "", "输入脚本名称", ScriptNaming.MAX_NAME_LENGTH) { scriptName ->
             val save: () -> Unit = {
-                QuickClickStore.saveScript(this, scriptName, configs)
-                currentScriptName = scriptName
-                savedSnapshot = configs.toList()
-                Toast.makeText(this, "已保存脚本「$scriptName」", Toast.LENGTH_SHORT).show()
-                stopSelf()
+                if (QuickClickStore.saveScript(this, scriptName, configs)) {
+                    currentScriptName = scriptName
+                    savedSnapshot = configs.toList()
+                    Toast.makeText(this, "已保存脚本「$scriptName」", Toast.LENGTH_SHORT).show()
+                    stopSelf()
+                }
             }
             if (QuickClickStore.loadScripts(this).any { it.name == scriptName }) {
                 confirmOverwrite(scriptName, save)
@@ -1400,8 +1402,9 @@ class QuickClickService : Service() {
         matchHandler.postDelayed({
             svc.takeScreenshotAsync { screen ->
                 if (destroyed) {
-                    // 服务已销毁：不再恢复窗口 / 提交匹配任务，图也没人用
+                    // 服务已销毁：不再恢复窗口 / 提交匹配任务，图与模板都没人用
                     screen?.recycle()
+                    if (!template.isRecycled) template.recycle()
                     matchInProgress = false
                     return@takeScreenshotAsync
                 }
@@ -1837,18 +1840,20 @@ class QuickClickService : Service() {
             if (QuickClickStore.loadScripts(this).any { it.name == scriptName }) {
                 // 名称已存在：确认是否覆盖
                 confirmOverwrite(scriptName) {
-                    QuickClickStore.saveScript(this, scriptName, configs)
-                    currentScriptName = scriptName
-                    savedSnapshot = configs.toList()
-                    Toast.makeText(this, "已覆盖脚本「$scriptName」", Toast.LENGTH_SHORT).show()
-                    onChanged()
+                    if (QuickClickStore.saveScript(this, scriptName, configs)) {
+                        currentScriptName = scriptName
+                        savedSnapshot = configs.toList()
+                        Toast.makeText(this, "已覆盖脚本「$scriptName」", Toast.LENGTH_SHORT).show()
+                        onChanged()
+                    }
                 }
             } else {
-                QuickClickStore.saveScript(this, scriptName, configs)
-                currentScriptName = scriptName
-                savedSnapshot = configs.toList()
-                Toast.makeText(this, "已保存脚本「$scriptName」", Toast.LENGTH_SHORT).show()
-                onChanged()
+                if (QuickClickStore.saveScript(this, scriptName, configs)) {
+                    currentScriptName = scriptName
+                    savedSnapshot = configs.toList()
+                    Toast.makeText(this, "已保存脚本「$scriptName」", Toast.LENGTH_SHORT).show()
+                    onChanged()
+                }
             }
         }
     }

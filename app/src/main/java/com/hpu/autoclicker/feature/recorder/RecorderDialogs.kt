@@ -206,7 +206,7 @@ private class RecorderNameState(initial: String) {
 /**
  * 脚本名限长：三个模块统一取 [ScriptNaming.MAX_NAME_LENGTH]。
  * 信息条放不下时由 UI 自动缩字号，不再按中英文分别截断——
- * 否则同一个脚本在录点器只许 6 字、在另外两个模块许 12 字，规则互相打架。
+ * 否则同一个脚本在录点器只许 6 字、在另外两个模块许 16 字，规则互相打架。
  */
 internal val RecorderNameInputFilter = InputFilter { source, start, end, dest, dstart, dend ->
     val result = buildString {

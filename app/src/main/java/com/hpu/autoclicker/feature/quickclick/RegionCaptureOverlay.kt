@@ -88,6 +88,9 @@ class RegionCaptureOverlay(
         }
         val btnConfirm = createOverlayButton(context, "确定", filled = true) {
             val cropped = sv.cropSelected()
+            // 选框铺满整图时 createBitmap 会原样返回底图本身：这时不能随 dismiss 一起回收，
+            // 否则紧接着的保存拿到的是已回收位图（表现为「保存截图失败」），所有权改交给调用方
+            if (cropped != null && cropped === this.source) this.source = null
             dismiss()
             if (cropped != null) listener.onConfirm(cropped, currentRect)
             else listener.onCancel()
