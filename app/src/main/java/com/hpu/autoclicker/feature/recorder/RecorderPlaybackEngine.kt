@@ -311,3 +311,60 @@ internal fun buildRecorderGesture(step: RecorderStep): GestureDescription? {
         .addStroke(GestureDescription.StrokeDescription(path, 0L, duration))
         .build()
 }
+
+/** 回显手势与其实际注入时长：调用方需要按时长设置恢复触摸的超时兜底 */
+internal data class RecorderEchoGesture(
+    val gesture: GestureDescription,
+    val durationMs: Long,
+)
+
+/**
+ * 录制即时回显专用手势。回显的目标是「让下层应用尽快产生反应」，
+ * 不是复刻用户当时的按压时长——那会把录制手感放大成肉眼可见的延迟
+ * （点击逐帧重放 50~600ms、长按重放全程最长 10 秒）。
+ * 正式回放仍走 [buildRecorderGesture]，脚本里的真实时长语义不变。
+ *
+ * - CLICK：固定 50ms 快速敲击，点击在应用侧看就是即时的；
+ * - LONG_PRESS：只压到刚过系统长按阈值（500~600ms），
+ *   应用能触发长按即可，不重放用户真实长按的全程；
+ * - SWIPE：保持录到的时长——滑动快慢影响滚动距离，压缩会改变回显效果。
+ */
+internal fun buildRecorderEchoGesture(step: RecorderStep): RecorderEchoGesture? {
+    val path = Path()
+    val duration: Long
+    when (step.type) {
+        RecorderStepType.CLICK -> {
+            duration = 50L
+            path.moveTo(step.x.toFloat(), step.y.toFloat())
+            path.lineTo(step.x + 0.5f, step.y.toFloat())
+        }
+
+        RecorderStepType.LONG_PRESS -> {
+            duration = step.duration.coerceIn(500L, 600L)
+            path.moveTo(step.x.toFloat(), step.y.toFloat())
+            path.lineTo(step.x + 0.5f, step.y.toFloat())
+        }
+
+        RecorderStepType.SWIPE -> {
+            duration = step.duration.coerceIn(50L, RecorderStep.MAX_GESTURE_DURATION)
+            path.moveTo(step.x1.toFloat(), step.y1.toFloat())
+            if (hypot(
+                    (step.x2 - step.x1).toFloat(),
+                    (step.y2 - step.y1).toFloat(),
+                ) < 1f
+            ) {
+                path.lineTo(step.x1 + 0.5f, step.y1.toFloat())
+            } else {
+                path.lineTo(step.x2.toFloat(), step.y2.toFloat())
+            }
+        }
+
+        RecorderStepType.WAIT -> return null
+    }
+    return RecorderEchoGesture(
+        gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, duration))
+            .build(),
+        durationMs = duration,
+    )
+}

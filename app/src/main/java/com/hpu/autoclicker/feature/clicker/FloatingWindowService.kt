@@ -1014,6 +1014,8 @@ class FloatingWindowService : Service() {
             windowManager.updateViewLayout(point.view, params)
         }
 
+        // 40ms ≈ 两帧多：足够 NOT_TOUCHABLE 在输入分发器生效（录点器同场景实测 24ms 可靠）。
+        // 原来前后各 80ms 是保守值，叠加在用户设定的点击间隔上会明显拖慢连点节奏
         runHandler.postDelayed({
             if (!isRunning) {
                 setHighlight(point.view, false)
@@ -1029,8 +1031,8 @@ class FloatingWindowService : Service() {
             runHandler.postDelayed({
                 setHighlight(point.view, false)
                 onFinished()
-            }, clickDuration + 80)
-        }, 80)
+            }, clickDuration + 40)
+        }, 40)
     }
 
     /**

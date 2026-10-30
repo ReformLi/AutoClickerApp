@@ -1109,30 +1109,44 @@ class QuickClickService : Service() {
 
     /** 文本匹配 → 拿坐标 → 执行动作（整条链路 try-catch，不崩溃） */
     private fun executeTextClick(cfg: QuickClickConfig) {
-        try {
-            val svc = AutoClickerAccessibilityService.instance
-            if (svc == null) {
-                setMainAvailable(false)
-                Toast.makeText(this, "无障碍服务未连接，请到系统设置重新开启", Toast.LENGTH_LONG).show()
-                return
-            }
-            // rootInActiveWindow 为 null 直接兜底提示，不狂点
-            if (svc.rootInActiveWindow == null) {
-                Toast.makeText(this, "无法获取当前界面内容，请重试", Toast.LENGTH_SHORT).show()
-                return
-            }
+        val svc = AutoClickerAccessibilityService.instance
+        if (svc == null) {
+            setMainAvailable(false)
+            Toast.makeText(this, "无障碍服务未连接，请到系统设置重新开启", Toast.LENGTH_LONG).show()
+            return
+        }
 
-            val pt = svc.findTargetByText(cfg.text)
-            if (pt == null) {
-                Toast.makeText(this, "未找到目标「${cfg.text}」", Toast.LENGTH_SHORT).show()
-                return
-            }
+        // 文本匹配兜底会遍历整棵节点树，复杂界面可到上百毫秒，
+        // 放后台线程跑（与图像匹配共用单线程池），避免卡住悬浮窗自身的刷新；
+        // 匹配结果回主线程后再注入手势
+        if (matchExecutor.isShutdown) return
+        matchExecutor.execute {
+            try {
+                // rootInActiveWindow 为 null 直接兜底提示，不狂点
+                if (svc.rootInActiveWindow == null) {
+                    matchHandler.post {
+                        Toast.makeText(this, "无法获取当前界面内容，请重试", Toast.LENGTH_SHORT).show()
+                    }
+                    return@execute
+                }
 
-            // 坐标用屏幕绝对坐标（findTargetByText 返回 getBoundsInScreen 中心点）
-            performActionAt(svc, pt.x, pt.y, cfg)
-        } catch (e: Exception) {
-            android.util.Log.e("QuickClick", "点击链路异常", e)
-            Toast.makeText(this, "执行失败，请重试", Toast.LENGTH_SHORT).show()
+                val pt = svc.findTargetByText(cfg.text)
+                matchHandler.post {
+                    if (pt == null) {
+                        Toast.makeText(this, "未找到目标「${cfg.text}」", Toast.LENGTH_SHORT).show()
+                        return@post
+                    }
+                    // 匹配期间按钮被删除（编辑态减按钮/清列表）：丢弃动作，避免对旧配置误点
+                    if (configs.none { it === cfg }) return@post
+                    // 坐标用屏幕绝对坐标（findTargetByText 返回 getBoundsInScreen 中心点）
+                    performActionAt(svc, pt.x, pt.y, cfg)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("QuickClick", "点击链路异常", e)
+                matchHandler.post {
+                    Toast.makeText(this, "执行失败，请重试", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 

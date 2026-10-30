@@ -715,7 +715,9 @@ class RecorderService : Service() {
      */
     private fun replayDuringRecording(step: RecorderStep) {
         val svc = AutoClickerAccessibilityService.instance ?: return
-        val gesture = buildRecorderGesture(step) ?: return
+        // 回显用快节奏手势（点击 50ms、长按刚过阈值），不是复刻真实按压时长；
+        // 正式回放仍按脚本原时长执行
+        val echo = buildRecorderEchoGesture(step) ?: return
         val overlay = captureOverlay ?: return
 
         // 每一步占一个代号：上一步的延迟注入块与手势回调可能在新的这一步之后才跑到，
@@ -730,12 +732,12 @@ class RecorderService : Service() {
             }
         }
         replayTimeout = timeout
-        handler.postDelayed(timeout, INJECTION_SWITCH_DELAY_MS + step.duration.coerceAtLeast(50L) + 900L)
+        handler.postDelayed(timeout, INJECTION_SWITCH_DELAY_MS + echo.durationMs + 900L)
         // 等一帧让 NOT_TOUCHABLE 生效，否则注入手势会被捕获层吞掉，看不到回显
         handler.postDelayed({
             if (generation != replayGeneration) return@postDelayed
             if (recordSession != RecordSession.RECORDING) return@postDelayed
-            svc.dispatchInjectedGesture(gesture) {
+            svc.dispatchInjectedGesture(echo.gesture) {
                 handler.post {
                     if (generation != replayGeneration) return@post
                     handler.removeCallbacks(timeout)
